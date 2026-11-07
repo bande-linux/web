@@ -22,13 +22,13 @@ There is no pre-platform core to download. Layout, DOM, SpiderMonkey and WebRend
 So "strip to the core and add Bande libraries" means a new backend. Nothing in the engine has to be removed for it.
 
 ## Design
-1. **Configure value `cairo-bande`.** `MOZ_WIDGET_TOOLKIT` stays `gtk` and the macro `MOZ_WIDGET_GTK` keeps meaning "Linux desktop". A new `MOZ_BANDE` selects `widget/bande`.
+1. **The toolkit name stays `gtk` inside the build system**, and `MOZ_WIDGET_GTK` keeps meaning "Linux desktop". Only the name stays: configure no longer looks for GTK, so a stray GTK include fails the build.
    - `MOZ_WIDGET_GTK` and friends appear on 606 lines in 225 files outside `widget/gtk`. Most choose Linux behaviour: DMABuf, Wayland, EGL, sandbox, fontconfig. A new toolkit name would have to patch all of them on every Firefox update.
    - Only 50 files outside `widget/gtk` call GTK, GDK, GLib or D-Bus, and 13 of those are `accessible/atk`. Those are what we patch.
-2. **`widget/bande`: new files, copied in by `prepare.sh`, not a patch.** A thin C++ `nsIWidget`, app shell and services over a Rust library. New files can't conflict with an update.
-3. **Reuse the Wayland half of `widget/gtk` from its own directory.** `DMABuf*`, `WaylandBuffer`, `WaylandVsyncSource`, `WaylandSurface`, `nsWaylandDisplay` and the compositor widget have 0 to 34 GTK lines each. `widget/bande/moz.build` compiles them in place, so WebRender and video upstream work arrives with updates. The few GDK lines get a small patch.
+2. **`platform/widget`: new files laid over `widget/gtk` by `prepare.sh`, not a patch.** A thin C++ `nsIWidget`, app shell and services over a Rust library. `prepare.sh` deletes the GTK files listed in `remove.list`. Other directories already include `/widget/gtk`, so nothing has to learn a new path, and new files can't conflict with an update.
+3. **The Wayland half of `widget/gtk` stays in place and is reused:** `DMABuf*`, `WaylandBuffer`, `WaylandVsyncSource`, `WaylandSurface`, `nsWaylandDisplay` and the compositor widget have 0 to 34 GTK lines each, so WebRender and video upstream work arrives with updates. The few GDK and GLib lines get small patches.
 4. **`libbande-gecko.so`: a Rust crate pinned to desktop like the apps**, reached through a small C ABI and `dlopen`ed by the parent process only. A toolkit bump rebuilds this library and not libxul. Content processes and their sandboxes don't load it.
-5. **Toolkit additions land in desktop first:** a `Window` whose content someone else renders, and popups for that content.
+5. **Toolkit additions land in desktop first:** `Role::Hosted`, a `Window` whose content someone else renders; `KeyDetail` key events, which the web needs for key-up and physical codes; `step_surfaces`, so Gecko's nested event loops can drive the toolkit; later, popups for hosted content.
 6. **Window layout as today:** toplevel surface from the toolkit, Gecko's rendering on a subsurface. Client-side, app id `org.bande.Browser`, so the compositor's control well keeps working.
 
 ## GLib
@@ -69,6 +69,6 @@ About 40 small patches' worth of hunks in about 40 existing files, about 500 cha
 
 ## Stages
 1. This plan.
-2. Proof: no libgtk in `readelf -d`, a Bande window rendering a real page, pointer and keyboard, under the real headless compositor on a build VM.
-3. Then, each driven by real input: tabs and the combined row; popups and menus; clipboard and drag; input methods; fullscreen; HiDPI; file dialogs; printing; accessibility; theme and dark mode; screen capture.
+2. Proof: no libgtk in `readelf -d`, a Bande window rendering a real page, pointer and keyboard, under the real headless compositor on a build VM. The proof build turns off D-Bus, Wi-Fi scanning, WebRTC, printing and accessibility. Each comes back at its stage below, and none of this ships until they have.
+3. Then, each driven by real input: tabs and the combined row; popups and menus; clipboard and drag; input methods; fullscreen; HiDPI and real screens; file dialogs; printing; accessibility; theme and dark mode; screen capture and WebRTC; single instance; idle, wake lock, media keys, keyring, gamepads, file icons.
 4. Drop GTK from the package's dependencies; measure the default-install size on a VM.
