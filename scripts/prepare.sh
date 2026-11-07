@@ -101,7 +101,7 @@ cp "$repo/search/search-config-v2.json" "$repo/search/search-config-icons.json" 
 cp "$repo"/search/2c4b8834-030c-4097-a887-c7506689095c* services/settings/dumps/main/search-config-icons/
 
 widget=$repo/platform/widget
-(cd widget/gtk && xargs rm -f < "$widget/remove.list" && rm -rf compat mozgtk mozwayland crashtests)
+(cd widget/gtk && xargs rm -f < "$widget/remove.list" && rm -rf compat mozgtk mozwayland)
 cp "$widget"/*.h "$widget"/*.cpp "$widget"/moz.build "$widget"/components.conf widget/gtk/
 
 cat "$repo/theme/bande.css" >> browser/themes/linux/browser.css
