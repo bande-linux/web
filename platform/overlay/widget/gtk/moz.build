@@ -60,6 +60,7 @@ UNIFIED_SOURCES += [
     "NativeMenuSupport.cpp",
     "nsAppShell.cpp",
     "nsBandeIdleService.cpp",
+    "nsBidiKeyboard.cpp",
     "nsLookAndFeel.cpp",
     "nsWaylandDisplay.cpp",
     "nsWidgetFactory.cpp",
