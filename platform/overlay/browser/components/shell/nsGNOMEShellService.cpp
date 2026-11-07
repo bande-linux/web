@@ -78,7 +78,7 @@ nsGNOMEShellService::GetGlibPrgname(nsACString& aOutput) {
 
 NS_IMETHODIMP
 nsGNOMEShellService::GetDesktopEntryStatus(
-    const nsACString&, nsIGNOMEShellService_DesktopEntryStatus* aStatus) {
+    const nsACString&, nsIGNOMEShellService::DesktopEntryStatus* aStatus) {
   *aStatus = nsIGNOMEShellService::DESKTOP_ENTRY_ABSENT;
   return NS_OK;
 }

@@ -16,6 +16,7 @@ steps=("$@"); [ ${#steps[@]} -gt 0 ] || steps=(chroot fetch prepare compile)
 
 as_root() { unshare --map-auto --map-root-user --mount --pid --fork --kill-child "$@"; }
 in_chroot() {
+    [ -x "$dir/chroot/usr/bin/env" ] || { echo "local-build: no chroot in $dir on this machine" >&2; exit 3; }
     mkdir -p "$dir/repo" "$dir/work" "$dir/out"
     rsync -a --delete --exclude .git "$repo/" "$dir/repo/"
     as_root bash -c '
