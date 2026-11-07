@@ -6,14 +6,44 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <unistd.h>
 #include <wayland-client.h>
 
 #include "BandeHost.h"
 #include "gfxPlatform.h"
+#include "mozilla/Atomics.h"
+#include "mozilla/Components.h"
+#include "nsIAppStartup.h"
 #include "nsWindow.h"
 
+using namespace mozilla;
 using namespace mozilla::widget;
+
+static Atomic<bool> sTermRequested(false);
+static int sSignalWakeFd = -1;
+
+static void TermSignalHandler(int) {
+  sTermRequested = true;
+  unsigned char byte = 1;
+  (void)!write(sSignalWakeFd, &byte, 1);
+}
+
+void nsAppShell::InstallTermSignalHandler() {
+  struct sigaction action{};
+  action.sa_handler = TermSignalHandler;
+  sigaction(SIGTERM, &action, nullptr);
+}
+
+static void QuitIfTermRequested() {
+  if (sTermRequested.exchange(false)) {
+    nsCOMPtr<nsIAppStartup> startup = components::AppStartup::Service();
+    if (startup) {
+      bool userAllowedQuit = true;
+      startup->Quit(nsIAppStartup::eForceQuit, 0, &userAllowedQuit);
+    }
+  }
+}
 
 nsAppShell::~nsAppShell() {
   if (mLocalPipe[0] >= 0) {
@@ -32,6 +62,7 @@ nsresult nsAppShell::Init() {
     }
     mWakeWrite = mLocalPipe[1];
   }
+  sSignalWakeFd = mWakeWrite;
   return nsBaseAppShell::Init();
 }
 
@@ -48,6 +79,7 @@ bool nsAppShell::ProcessProcessLocal(bool aMayWait) {
   unsigned char bytes[64];
   while (read(mLocalPipe[0], bytes, sizeof(bytes)) > 0) {
   }
+  QuitIfTermRequested();
   NativeEventCallback();
   return true;
 }
@@ -65,6 +97,7 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
   while (BandeHost::NextEvent(&event)) {
     handled = true;
     if (event.kind == BandeEventKind::Wake) {
+      QuitIfTermRequested();
       NativeEventCallback();
     } else {
       nsWindow::HandleBandeEvent(event);

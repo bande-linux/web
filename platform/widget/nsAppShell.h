@@ -13,6 +13,8 @@ class nsAppShell final : public nsBaseAppShell {
 
   nsresult Init();
 
+  static void InstallTermSignalHandler();
+
  private:
   ~nsAppShell() override;
 

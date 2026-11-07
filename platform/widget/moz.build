@@ -45,6 +45,7 @@ EXPORTS.mozilla.widget += [
 UNIFIED_SOURCES += [
     "BandeHost.cpp",
     "BandeKeys.cpp",
+    "BandeTimers.cpp",
     "CompositorWidgetChild.cpp",
     "CompositorWidgetParent.cpp",
     "DMABufDevice.cpp",
