@@ -10,9 +10,23 @@
 #include "nsAppShellSingleton.h"
 #include "nsLookAndFeel.h"
 #include "nsWindow.h"
+#include "HeadlessClipboard.h"
+#include "gfxPlatform.h"
+#include "nsClipboard.h"
+#include "mozilla/Components.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
+
+NS_IMPL_COMPONENT_FACTORY(nsIClipboard) {
+  nsCOMPtr<nsIClipboard> clipboard;
+  if (gfxPlatform::IsHeadless()) {
+    clipboard = new HeadlessClipboard();
+  } else {
+    clipboard = new nsClipboard();
+  }
+  return clipboard.forget().downcast<nsISupports>();
+}
 
 nsresult nsWidgetGtk2ModuleCtor() { return nsAppShellInit(); }
 

@@ -34,6 +34,9 @@ static LazyLogModule sBandeLog("Bande");
   X(set_cursor, void, uint64_t, uint32_t)                              \
   X(watch_fd, void, int)                                               \
   X(unwatch_fd, void, int)                                             \
+  X(copy, void, bool, bool, size_t, const char* const*, const uint8_t* const*, const size_t*) \
+  X(clipboard_types, size_t, char*, size_t)                            \
+  X(paste, bool, const char*)                                          \
   X(flush, void)                                                       \
   X(step, bool, bool)                                                  \
   X(next_event, bool, BandeEvent*)
@@ -130,6 +133,15 @@ void BandeHost::SetCursor(uint64_t aWindow, uint32_t aKind) {
   s_set_cursor(aWindow, aKind);
 }
 void BandeHost::Flush() { s_flush(); }
+void BandeHost::Copy(bool aPrimary, bool aConcealed, size_t aCount,
+                     const char* const* aMimes, const uint8_t* const* aData,
+                     const size_t* aLengths) {
+  s_copy(aPrimary, aConcealed, aCount, aMimes, aData, aLengths);
+}
+size_t BandeHost::ClipboardTypes(char* aOut, size_t aCapacity) {
+  return s_clipboard_types(aOut, aCapacity);
+}
+bool BandeHost::Paste(const char* aMime) { return s_paste(aMime); }
 void BandeHost::WatchFd(int aFd) { s_watch_fd(aFd); }
 void BandeHost::UnwatchFd(int aFd) { s_unwatch_fd(aFd); }
 bool BandeHost::Step(bool aBlock) { return s_step(aBlock); }

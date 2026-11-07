@@ -12,6 +12,7 @@
 
 #include "BandeFdWatch.h"
 #include "BandeHost.h"
+#include "nsClipboard.h"
 #include "gfxPlatform.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Components.h"
@@ -108,6 +109,10 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
     if (event.kind == BandeEventKind::Wake) {
       QuitIfTermRequested();
       NativeEventCallback();
+    } else if (event.kind == BandeEventKind::ClipboardData) {
+      nsClipboard::HandleData(event.text, event.data, event.len);
+    } else if (event.kind == BandeEventKind::ClipboardChanged) {
+      nsClipboard::HandleChanged();
     } else if (event.kind == BandeEventKind::FdReady) {
       BandeFdWatchFire(int(event.a));
     } else {

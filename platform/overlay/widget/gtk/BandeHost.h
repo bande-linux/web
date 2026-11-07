@@ -5,6 +5,7 @@
 #ifndef widget_bande_BandeHost_h
 #define widget_bande_BandeHost_h
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct wl_display;
@@ -27,6 +28,8 @@ enum class BandeEventKind : uint32_t {
   Resized = 12,
   Appearance = 13,
   FdReady = 14,
+  ClipboardData = 15,
+  ClipboardChanged = 16,
 };
 
 enum BandeModifier : uint32_t {
@@ -57,6 +60,8 @@ struct BandeEvent {
   uint32_t d;
   uint32_t modifiers;
   const char* text;
+  const uint8_t* data;
+  size_t len;
 };
 
 class BandeHost final {
@@ -84,6 +89,11 @@ class BandeHost final {
   static void SetFullScreen(uint64_t aWindow, bool aFullScreen);
   static void SetCursor(uint64_t aWindow, uint32_t aKind);
   static void Flush();
+  static void Copy(bool aPrimary, bool aConcealed, size_t aCount,
+                   const char* const* aMimes, const uint8_t* const* aData,
+                   const size_t* aLengths);
+  static size_t ClipboardTypes(char* aOut, size_t aCapacity);
+  static bool Paste(const char* aMime);
   static void WatchFd(int aFd);
   static void UnwatchFd(int aFd);
   static bool Step(bool aBlock);

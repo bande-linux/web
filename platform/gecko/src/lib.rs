@@ -4,7 +4,7 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use bande_graphics::{Color, Cursor, Event, Modifiers, PointerButton, ResizeEdge, Scene, ScrollSource};
-use bande_toolkit_platform::{Role, Surfaces, Wait, Window, WindowEvent, step_surfaces};
+use bande_toolkit_platform::{Role, Surfaces, Transfer, Wait, Window, WindowEvent, step_surfaces};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client::{Connection, EventQueue};
 
@@ -22,6 +22,8 @@ pub const EVENT_TOPLEVEL_STATE: u32 = 11;
 pub const EVENT_RESIZED: u32 = 12;
 pub const EVENT_APPEARANCE: u32 = 13;
 pub const EVENT_FD_READY: u32 = 14;
+pub const EVENT_CLIPBOARD_DATA: u32 = 15;
+pub const EVENT_CLIPBOARD_CHANGED: u32 = 16;
 
 const MOD_SHIFT: u32 = 1;
 const MOD_CONTROL: u32 = 2;
@@ -58,6 +60,8 @@ pub struct BandeEvent {
     pub d: u32,
     pub modifiers: u32,
     pub text: *const c_char,
+    pub data: *const u8,
+    pub len: usize,
 }
 
 #[derive(Default)]
@@ -74,6 +78,7 @@ struct Queued {
     d: u32,
     modifiers: u32,
     text: Option<CString>,
+    data: Vec<u8>,
 }
 
 struct Idle;
@@ -88,6 +93,8 @@ struct Host {
     next_id: u64,
     events: VecDeque<Queued>,
     current_text: Option<CString>,
+    current_data: Vec<u8>,
+    focused: Option<u64>,
 }
 
 thread_local! {
@@ -191,6 +198,18 @@ impl Host {
                 text: CString::new(detail.text).ok(),
                 ..Queued::default()
             },
+            WindowEvent::PastedData { mime, bytes } => Queued {
+                kind: EVENT_CLIPBOARD_DATA,
+                window,
+                text: CString::new(mime).ok(),
+                data: bytes,
+                ..Queued::default()
+            },
+            WindowEvent::ClipboardChanged => Queued {
+                kind: EVENT_CLIPBOARD_CHANGED,
+                window,
+                ..Queued::default()
+            },
             WindowEvent::Focus(focused) => Queued {
                 kind: EVENT_FOCUS,
                 window,
@@ -229,7 +248,18 @@ impl Host {
             },
             _ => return,
         };
+        if queued.kind == EVENT_FOCUS && queued.a == 1 {
+            self.focused = Some(window);
+        }
         self.events.push_back(queued);
+    }
+
+    fn clipboard_window(&mut self) -> Option<&mut Window> {
+        let index = self
+            .focused
+            .and_then(|id| self.position(id))
+            .unwrap_or(0);
+        self.windows.get_mut(index)
     }
 
     fn drain_wake(&mut self) {
@@ -389,6 +419,8 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
         next_id: 1,
         events: VecDeque::new(),
         current_text: None,
+        current_data: Vec::new(),
+        focused: None,
     }));
     display
 }
@@ -620,6 +652,7 @@ pub unsafe extern "C" fn bande_gecko_next_event(event: *mut BandeEvent) -> bool 
             return false;
         };
         host.current_text = queued.text;
+        host.current_data = queued.data;
         let text = host
             .current_text
             .as_ref()
@@ -638,8 +671,83 @@ pub unsafe extern "C" fn bande_gecko_next_event(event: *mut BandeEvent) -> bool 
                 d: queued.d,
                 modifiers: queued.modifiers,
                 text,
+                data: host.current_data.as_ptr(),
+                len: host.current_data.len(),
             });
         }
         true
+    })
+}
+
+/// # Safety
+/// `mimes`, `data` and `lengths` each point to `count` valid entries.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_copy(
+    primary: bool,
+    concealed: bool,
+    count: usize,
+    mimes: *const *const c_char,
+    data: *const *const u8,
+    lengths: *const usize,
+) {
+    let mut transfer = Transfer::default();
+    for index in 0..count {
+        let (mime, bytes) = unsafe {
+            (
+                text_of(*mimes.add(index)),
+                std::slice::from_raw_parts(*data.add(index), *lengths.add(index)).to_vec(),
+            )
+        };
+        match mime.as_str() {
+            "text/plain;charset=utf-8" => transfer.text = String::from_utf8_lossy(&bytes).into_owned(),
+            "image/png" => transfer.png = bytes,
+            "text/uri-list" => {
+                transfer.uris = String::from_utf8_lossy(&bytes)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                    .map(str::to_owned)
+                    .collect();
+            }
+            _ => transfer = transfer.with_data(&mime, bytes),
+        }
+    }
+    if concealed {
+        transfer = transfer.concealed();
+    }
+    with_host((), |host| {
+        if let Some(window) = host.clipboard_window() {
+            match primary {
+                true => window.select_primary(&transfer.text),
+                false => window.copy_transfer(transfer),
+            }
+        }
+    });
+}
+
+/// # Safety
+/// `out` points to `capacity` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_clipboard_types(out: *mut u8, capacity: usize) -> usize {
+    with_host(0, |host| {
+        let types = host
+            .clipboard_window()
+            .map(|window| window.clipboard_types().join("\n"))
+            .unwrap_or_default();
+        let bytes = types.as_bytes();
+        let length = bytes.len().min(capacity);
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, length) };
+        length
+    })
+}
+
+/// # Safety
+/// `mime` is a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_paste(mime: *const c_char) -> bool {
+    let mime = text_of(mime);
+    with_host(false, |host| match host.clipboard_window() {
+        Some(window) => window.paste_data(&mime).is_ok(),
+        None => false,
     })
 }
