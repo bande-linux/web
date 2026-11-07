@@ -192,23 +192,25 @@ impl<A: Wire, B: Wire> Wire for (A, B) {
     }
 }
 
+#[macro_export]
 macro_rules! wire_struct {
     ($(#[$meta:meta])* pub struct $name:ident { $(pub $field:ident : $ty:ty),* $(,)? }) => {
         $(#[$meta])*
         pub struct $name { $(pub $field: $ty),* }
 
-        impl $crate::wire::Wire for $name {
-            fn write(&self, writer: &mut $crate::wire::Writer) {
+        impl $crate::Wire for $name {
+            fn write(&self, writer: &mut $crate::Writer) {
                 $(writer.put(&self.$field);)*
             }
 
-            fn read(reader: &mut $crate::wire::Reader<'_>) -> Result<Self, $crate::wire::Malformed> {
+            fn read(reader: &mut $crate::Reader<'_>) -> Result<Self, $crate::Malformed> {
                 Ok(Self { $($field: reader.get()?),* })
             }
         }
     };
 }
 
+#[macro_export]
 macro_rules! wire_enum {
     ($(#[$meta:meta])* pub enum $name:ident {
         $($variant:ident $({ $($field:ident : $ty:ty),* $(,)? })? = $tag:literal),* $(,)?
@@ -216,8 +218,8 @@ macro_rules! wire_enum {
         $(#[$meta])*
         pub enum $name { $($variant $({ $($field: $ty),* })?),* }
 
-        impl $crate::wire::Wire for $name {
-            fn write(&self, writer: &mut $crate::wire::Writer) {
+        impl $crate::Wire for $name {
+            fn write(&self, writer: &mut $crate::Writer) {
                 match self {
                     $(Self::$variant $({ $($field),* })? => {
                         writer.put(&($tag as u8));
@@ -226,14 +228,12 @@ macro_rules! wire_enum {
                 }
             }
 
-            fn read(reader: &mut $crate::wire::Reader<'_>) -> Result<Self, $crate::wire::Malformed> {
+            fn read(reader: &mut $crate::Reader<'_>) -> Result<Self, $crate::Malformed> {
                 match reader.get::<u8>()? {
                     $($tag => Ok(Self::$variant $({ $($field: reader.get::<$ty>()?),* })?),)*
-                    _ => Err($crate::wire::Malformed),
+                    _ => Err($crate::Malformed),
                 }
             }
         }
     };
 }
-
-pub(crate) use {wire_enum, wire_struct};

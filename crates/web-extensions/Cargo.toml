@@ -1,0 +1,20 @@
+[package]
+name = "web-extensions"
+description = "WebExtensions without script: manifests, match patterns, packages and signatures, installs, permissions, storage and declarativeNetRequest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+aws-lc-rs.workspace = true
+flate2.workspace = true
+regex.workspace = true
+rustls-webpki.workspace = true
+serde_json.workspace = true
+url.workspace = true
+web-ipc.workspace = true
+
+[lints]
+workspace = true

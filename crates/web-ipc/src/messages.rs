@@ -1,6 +1,6 @@
 use url::Url;
 
-use crate::wire::{wire_enum, wire_struct};
+use crate::{wire_enum, wire_struct};
 
 wire_struct! {
     #[derive(Debug, Clone, Copy, PartialEq)]
