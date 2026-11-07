@@ -95,8 +95,7 @@ class BandeTextListener final : public TextEventDispatcherListener {
     return NS_OK;
   }
   NS_IMETHOD_(IMENotificationRequests) GetIMENotificationRequests() override {
-    return IMENotificationRequests(
-        IMENotificationRequests::NOTIFY_POSITION_CHANGE);
+    return IMENotificationRequests(IMENotificationRequest::PositionChange);
   }
   NS_IMETHOD_(void) OnRemovedFrom(TextEventDispatcher*) override {}
   NS_IMETHOD_(void)
@@ -824,14 +823,13 @@ void nsWindow::UpdateTextInput() {
     BandeHost::SetTextInput(mBandeWindow, false, 0, 0, 0, 0);
     return;
   }
-  nsEventStatus status = nsEventStatus_eIgnore;
   WidgetQueryContentEvent selection(true, eQuerySelectedText, this);
-  DispatchEvent(&selection, status);
+  DispatchEvent(&selection);
   LayoutDeviceIntRect caret(0, 0, 1, 1);
   if (selection.Succeeded()) {
     WidgetQueryContentEvent caretEvent(true, eQueryCaretRect, this);
     caretEvent.InitForQueryCaretRect(selection.mReply->StartOffset());
-    DispatchEvent(&caretEvent, status);
+    DispatchEvent(&caretEvent);
     if (caretEvent.Succeeded()) {
       caret = caretEvent.mReply->mRect;
     }
