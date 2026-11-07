@@ -155,6 +155,7 @@ class nsWindow final : public nsIWidget {
   bool IsPopup() const { return mWindowType == WindowType::Popup; }
   bool IsDragPopup() const { return false; }
   bool IsDestroyed() const { return mIsDestroyed; }
+  uint64_t BandeWindow() const { return mBandeWindow; }
 
  private:
   ~nsWindow() override;
@@ -175,6 +176,7 @@ class nsWindow final : public nsIWidget {
   void DispatchPointer(const mozilla::widget::BandeEvent& aEvent);
   void DispatchScroll(const mozilla::widget::BandeEvent& aEvent);
   void DispatchKey(const mozilla::widget::BandeEvent& aEvent);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void DispatchDrag(const mozilla::widget::BandeEvent& aEvent);
   void DispatchFocus(bool aFocused);
   void DispatchToplevelState(uint32_t aState);
   mozilla::Modifiers ModifiersOf(uint32_t aBits) const;

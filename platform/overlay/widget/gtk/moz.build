@@ -62,6 +62,7 @@ UNIFIED_SOURCES += [
     "nsBandeIdleService.cpp",
     "nsBidiKeyboard.cpp",
     "nsClipboard.cpp",
+    "nsDragService.cpp",
     "nsLookAndFeel.cpp",
     "nsWaylandDisplay.cpp",
     "nsWidgetFactory.cpp",

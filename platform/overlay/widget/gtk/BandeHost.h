@@ -32,6 +32,11 @@ enum class BandeEventKind : uint32_t {
   ClipboardChanged = 16,
   PopupMoved = 17,
   PopupDismissed = 18,
+  DragEnter = 19,
+  DragMove = 20,
+  DragLeave = 21,
+  DragDrop = 22,
+  DragFinished = 23,
 };
 
 enum BandeModifier : uint32_t {
@@ -100,6 +105,10 @@ class BandeHost final {
                    const size_t* aLengths);
   static size_t ClipboardTypes(char* aOut, size_t aCapacity);
   static bool Paste(const char* aMime);
+  static bool StartDrag(uint64_t aWindow, uint32_t aActions, size_t aCount,
+                        const char* const* aMimes, const uint8_t* const* aData,
+                        const size_t* aLengths);
+  static void AcceptDrag(uint64_t aWindow, uint32_t aAction);
   static void WatchFd(int aFd);
   static void UnwatchFd(int aFd);
   static bool Step(bool aBlock);

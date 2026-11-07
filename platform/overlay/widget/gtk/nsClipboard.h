@@ -17,6 +17,9 @@ class nsClipboard final : public nsBaseClipboard {
   static void HandleData(const char* aMime, const uint8_t* aData,
                          size_t aLength);
   static void HandleChanged();
+  static nsresult Encode(nsITransferable* aTransferable,
+                         nsTArray<nsCString>& aMimes,
+                         nsTArray<nsCString>& aPayloads);
 
  protected:
   NS_IMETHOD SetNativeClipboardData(nsITransferable* aTransferable,

@@ -69,18 +69,12 @@ static bool EncodePng(nsISupports* aImage, nsCString& aOut) {
   return NS_SUCCEEDED(NS_ConsumeStream(stream, UINT32_MAX, aOut));
 }
 
-NS_IMETHODIMP
-nsClipboard::SetNativeClipboardData(nsITransferable* aTransferable,
-                                    ClipboardType aWhichClipboard) {
-  if (!BandeHost::IsActive()) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
+nsresult nsClipboard::Encode(nsITransferable* aTransferable,
+                             nsTArray<nsCString>& mimes,
+                             nsTArray<nsCString>& payloads) {
   nsTArray<nsCString> flavors;
   nsresult rv = aTransferable->FlavorsTransferableCanExport(flavors);
   NS_ENSURE_SUCCESS(rv, rv);
-
-  nsTArray<nsCString> mimes;
-  nsTArray<nsCString> payloads;
   bool imageDone = false;
   for (const nsCString& flavor : flavors) {
     nsCOMPtr<nsISupports> item;
@@ -133,6 +127,19 @@ nsClipboard::SetNativeClipboardData(nsITransferable* aTransferable,
     }
   }
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsClipboard::SetNativeClipboardData(nsITransferable* aTransferable,
+                                    ClipboardType aWhichClipboard) {
+  if (!BandeHost::IsActive()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+  nsTArray<nsCString> mimes;
+  nsTArray<nsCString> payloads;
+  nsresult rv = Encode(aTransferable, mimes, payloads);
+  NS_ENSURE_SUCCESS(rv, rv);
   nsTArray<const char*> mimePointers;
   nsTArray<const uint8_t*> dataPointers;
   nsTArray<size_t> lengths;

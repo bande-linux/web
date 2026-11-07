@@ -6,6 +6,7 @@
 
 #include "BandeKeys.h"
 #include "NativeKeyBindings.h"
+#include "nsDragService.h"
 #include "nsIRollupListener.h"
 #include "GtkCompositorWidget.h"
 #include "ScreenHelperBande.h"
@@ -688,6 +689,92 @@ void nsWindow::DispatchKey(const BandeEvent& aEvent) {
   }
 }
 
+void nsWindow::DispatchDrag(const BandeEvent& aEvent) {
+  RefPtr<nsDragService> service = nsDragService::GetInstance();
+  RefPtr<nsDragSession> session =
+      static_cast<nsDragSession*>(service->GetCurrentSession(this));
+  const LayoutDeviceIntPoint point = ToDevice(aEvent.x, aEvent.y);
+  auto dispatch = [&](EventMessage aMessage) {
+    WidgetDragEvent event(true, aMessage, this);
+    event.mRefPoint = point;
+    DispatchInputEvent(&event);
+  };
+  auto reply = [&]() {
+    if (!session) {
+      return;
+    }
+    bool canDrop = false;
+    session->GetCanDrop(&canDrop);
+    uint32_t action = nsIDragService::DRAGDROP_ACTION_NONE;
+    session->GetDragAction(&action);
+    BandeHost::AcceptDrag(mBandeWindow,
+                          !canDrop ? 0
+                          : (action & nsIDragService::DRAGDROP_ACTION_MOVE) ? 2
+                                                                           : 1);
+  };
+  nsDependentCSubstring uris(reinterpret_cast<const char*>(aEvent.data),
+                             aEvent.len);
+  switch (aEvent.kind) {
+    case BandeEventKind::DragEnter: {
+      if (!session) {
+        session = static_cast<nsDragSession*>(service->StartDragSession(this));
+        session->SetIncoming(""_ns, uris, aEvent.a);
+      }
+      session->SetDragAction(nsIDragService::DRAGDROP_ACTION_COPY);
+      session->SetDragEndPoint(point.x, point.y);
+      dispatch(eDragEnter);
+      dispatch(eDragOver);
+      reply();
+      break;
+    }
+    case BandeEventKind::DragMove:
+      if (session) {
+        session->SetDragEndPoint(point.x, point.y);
+        session->FireDragEventAtSource(eDrag, 0);
+        dispatch(eDragOver);
+        reply();
+      }
+      break;
+    case BandeEventKind::DragLeave:
+      if (session) {
+        dispatch(eDragExit);
+        nsCOMPtr<nsINode> source;
+        session->GetSourceNode(getter_AddRefs(source));
+        if (!source) {
+          session->EndDragSession(false, 0);
+        }
+      }
+      break;
+    case BandeEventKind::DragDrop:
+      if (session) {
+        nsCOMPtr<nsINode> source;
+        session->GetSourceNode(getter_AddRefs(source));
+        if (!source) {
+          session->SetIncoming(aEvent.text ? nsDependentCString(aEvent.text)
+                                           : nsDependentCString(""),
+                               uris, aEvent.text != nullptr);
+        }
+        session->SetDragEndPoint(point.x, point.y);
+        dispatch(eDragOver);
+        dispatch(eDrop);
+        session->EndDragSession(true, 0);
+      }
+      break;
+    case BandeEventKind::DragFinished:
+      if (session) {
+        session->SetDragAction(aEvent.a == 2
+                                   ? nsIDragService::DRAGDROP_ACTION_MOVE
+                               : aEvent.a == 1
+                                   ? nsIDragService::DRAGDROP_ACTION_COPY
+                                   : nsIDragService::DRAGDROP_ACTION_NONE);
+        session->EndDragSession(aEvent.a != 0, 0);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
 void nsWindow::DispatchFocus(bool aFocused) {
   if (!mWidgetListener) {
     return;
@@ -762,6 +849,13 @@ void nsWindow::OnBandeEvent(const BandeEvent& aEvent) {
       }
       break;
     }
+    case BandeEventKind::DragEnter:
+    case BandeEventKind::DragMove:
+    case BandeEventKind::DragLeave:
+    case BandeEventKind::DragDrop:
+    case BandeEventKind::DragFinished:
+      DispatchDrag(aEvent);
+      break;
     case BandeEventKind::PopupDismissed:
       if (nsIRollupListener* listener = GetActiveRollupListener()) {
         listener->Rollup({});

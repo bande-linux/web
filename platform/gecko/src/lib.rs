@@ -4,7 +4,7 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use bande_graphics::{Color, Cursor, Rect, Event, Modifiers, PointerButton, ResizeEdge, Scene, ScrollSource};
-use bande_toolkit_platform::{Role, Surfaces, Transfer, Wait, Window, WindowEvent, step_surfaces};
+use bande_toolkit_platform::{DragAction, DragEvent, Role, Surfaces, Transfer, Wait, Window, WindowEvent, step_surfaces};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client::{Connection, EventQueue};
 
@@ -25,6 +25,14 @@ pub const EVENT_CLIPBOARD_DATA: u32 = 15;
 pub const EVENT_CLIPBOARD_CHANGED: u32 = 16;
 pub const EVENT_POPUP_MOVED: u32 = 17;
 pub const EVENT_POPUP_DISMISSED: u32 = 18;
+pub const EVENT_DRAG_ENTER: u32 = 19;
+pub const EVENT_DRAG_MOVE: u32 = 20;
+pub const EVENT_DRAG_LEAVE: u32 = 21;
+pub const EVENT_DRAG_DROP: u32 = 22;
+pub const EVENT_DRAG_FINISHED: u32 = 23;
+
+const DRAG_COPY: u32 = 1;
+const DRAG_MOVE: u32 = 2;
 
 const MOD_SHIFT: u32 = 1;
 const MOD_CONTROL: u32 = 2;
@@ -136,6 +144,72 @@ fn scroll_number(source: ScrollSource) -> u32 {
     }
 }
 
+fn action_number(action: Option<DragAction>) -> u32 {
+    match action {
+        Some(DragAction::Copy) => DRAG_COPY,
+        Some(DragAction::Move) => DRAG_MOVE,
+        None => 0,
+    }
+}
+
+fn action_of(number: u32) -> Option<DragAction> {
+    match number {
+        DRAG_COPY => Some(DragAction::Copy),
+        DRAG_MOVE => Some(DragAction::Move),
+        _ => None,
+    }
+}
+
+fn drag_event(window: u64, drag: DragEvent) -> Queued {
+    match drag {
+        DragEvent::Entered {
+            position,
+            uris,
+            text,
+        } => Queued {
+            kind: EVENT_DRAG_ENTER,
+            window,
+            x: f64::from(position.x),
+            y: f64::from(position.y),
+            a: u32::from(text),
+            data: uris.join("\n").into_bytes(),
+            ..Queued::default()
+        },
+        DragEvent::Moved(position) => Queued {
+            kind: EVENT_DRAG_MOVE,
+            window,
+            x: f64::from(position.x),
+            y: f64::from(position.y),
+            ..Queued::default()
+        },
+        DragEvent::Left => Queued {
+            kind: EVENT_DRAG_LEAVE,
+            window,
+            ..Queued::default()
+        },
+        DragEvent::Dropped {
+            position,
+            transfer,
+            action,
+        } => Queued {
+            kind: EVENT_DRAG_DROP,
+            window,
+            x: f64::from(position.x),
+            y: f64::from(position.y),
+            a: action_number(action),
+            text: CString::new(transfer.text).ok(),
+            data: transfer.uris.join("\n").into_bytes(),
+            ..Queued::default()
+        },
+        DragEvent::Finished(action) => Queued {
+            kind: EVENT_DRAG_FINISHED,
+            window,
+            a: action_number(action),
+            ..Queued::default()
+        },
+    }
+}
+
 fn pointer_event(window: u64, kind: u32, pointer: bande_graphics::Pointer) -> Queued {
     Queued {
         kind,
@@ -219,6 +293,7 @@ impl Host {
                 y: f64::from(y),
                 ..Queued::default()
             },
+            WindowEvent::Drag(drag) => drag_event(window, drag),
             WindowEvent::PopupDismissed => Queued {
                 kind: EVENT_POPUP_DISMISSED,
                 window,
@@ -748,17 +823,12 @@ pub unsafe extern "C" fn bande_gecko_next_event(event: *mut BandeEvent) -> bool 
     })
 }
 
-/// # Safety
-/// `mimes`, `data` and `lengths` each point to `count` valid entries.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn bande_gecko_copy(
-    primary: bool,
-    concealed: bool,
+unsafe fn transfer_of(
     count: usize,
     mimes: *const *const c_char,
     data: *const *const u8,
     lengths: *const usize,
-) {
+) -> Transfer {
     let mut transfer = Transfer::default();
     for index in 0..count {
         let (mime, bytes) = unsafe {
@@ -781,6 +851,21 @@ pub unsafe extern "C" fn bande_gecko_copy(
             _ => transfer = transfer.with_data(&mime, bytes),
         }
     }
+    transfer
+}
+
+/// # Safety
+/// `mimes`, `data` and `lengths` each point to `count` valid entries.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_copy(
+    primary: bool,
+    concealed: bool,
+    count: usize,
+    mimes: *const *const c_char,
+    data: *const *const u8,
+    lengths: *const usize,
+) {
+    let mut transfer = unsafe { transfer_of(count, mimes, data, lengths) };
     if concealed {
         transfer = transfer.concealed();
     }
@@ -819,4 +904,36 @@ pub unsafe extern "C" fn bande_gecko_paste(mime: *const c_char) -> bool {
         Some(window) => window.paste_data(&mime).is_ok(),
         None => false,
     })
+}
+
+/// # Safety
+/// `mimes`, `data` and `lengths` each point to `count` valid entries.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_start_drag(
+    id: u64,
+    actions: u32,
+    count: usize,
+    mimes: *const *const c_char,
+    data: *const *const u8,
+    lengths: *const usize,
+) -> bool {
+    let transfer = unsafe { transfer_of(count, mimes, data, lengths) };
+    let allowed: Vec<DragAction> = [DRAG_COPY, DRAG_MOVE]
+        .into_iter()
+        .filter(|bit| actions & bit != 0)
+        .filter_map(action_of)
+        .collect();
+    with_host(false, |host| match host.window(id) {
+        Some(window) => window.start_drag(transfer, &allowed, None).is_ok(),
+        None => false,
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_accept_drag(id: u64, action: u32) {
+    with_host((), |host| {
+        if let Some(window) = host.window(id) {
+            window.accept_drag(action_of(action));
+        }
+    });
 }
