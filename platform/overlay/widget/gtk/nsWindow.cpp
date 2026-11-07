@@ -585,7 +585,7 @@ bool nsWindow::RolledUpOnPress() {
   }
   nsIRollupListener* listener = GetActiveRollupListener();
   nsCOMPtr<nsIWidget> rollupWidget = listener ? listener->GetRollupWidget() : nullptr;
-  if (!rollupWidget || rollupWidget == this || !listener->ShouldRollupOnMouseDown()) {
+  if (!rollupWidget || rollupWidget == this) {
     return false;
   }
   return listener->Rollup({});
