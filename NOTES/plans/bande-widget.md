@@ -35,7 +35,7 @@ So "strip to the core and add Bande libraries" means a new backend. Nothing in t
 Aim: none. Outside `widget/gtk`, it is used for:
 - **Main loop:** replaced by the app shell polling the Wayland socket.
 - **`widget/gtk` D-Bus and GSettings, portals, MPRIS, wake lock, remote, shell integration, UPower, geolocation:** moved to the Rust library over `zbus`, which the toolkit already links, or dropped where Bande has no such service.
-- **Screen capture:** libwebrtc's portal code uses GIO in about 9 files under `third_party/libwebrtc`. A replacement of those files is the one part that touches vendored code; decided at that stage.
+- **Screen capture:** libwebrtc's portal code uses GIO in 11 files under `third_party/libwebrtc`. A replacement of those files is the one part that touches vendored code; decided at that stage.
 
 ## Accessibility
 Screen readers must keep working: the GTK dependency isn't dropped from the package until this stage passes.

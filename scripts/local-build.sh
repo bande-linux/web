@@ -6,6 +6,7 @@
 #   fetch    Debian's source into <dir>/work (emptied first)
 #   prepare  branding, prefs and patches (prepare.sh), from this checkout
 #   compile  build the package into <dir>/out (emptied first)
+#   dev      run .dev/run.sh of this checkout in the chroot, for incremental work
 #   clean    remove <dir>
 set -euo pipefail
 debver=$1 dir=$(realpath -m "$2"); shift 2
@@ -45,6 +46,7 @@ for step in "${steps[@]}"; do
         as_root rm -rf "$dir/out"
         in_chroot /repo/scripts/build.sh compile "$version" /work /out
         ;;
+    dev) in_chroot bash /repo/.dev/run.sh ;;
     clean) as_root rm -rf "$dir" ;;
     *) echo "local-build: unknown step $step" >&2; exit 2 ;;
     esac

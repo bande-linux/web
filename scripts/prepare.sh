@@ -50,6 +50,10 @@ s += '''ac_add_options --disable-crashreporter
 ac_add_options --disable-debug-symbols
 ac_add_options --disable-default-browser-agent
 ac_add_options --enable-proxy-bypass-protection
+ac_add_options --disable-dbus
+ac_add_options --disable-webrtc
+ac_add_options --disable-printing
+ac_add_options --disable-accessibility
 export MOZ_TELEMETRY_REPORTING=
 mk_add_options MOZ_CRASHREPORTER=0
 mk_add_options MOZ_DATA_REPORTING=0
@@ -94,6 +98,10 @@ echo "$blank" > "$b/content/firefox-wordmark.svg"
 
 cp "$repo/search/search-config-v2.json" "$repo/search/search-config-icons.json" services/settings/dumps/main/
 cp "$repo"/search/2c4b8834-030c-4097-a887-c7506689095c* services/settings/dumps/main/search-config-icons/
+
+widget=$repo/platform/widget
+(cd widget/gtk && xargs rm -f < "$widget/remove.list" && rm -rf compat mozgtk mozwayland crashtests)
+cp "$widget"/*.h "$widget"/*.cpp "$widget"/moz.build "$widget"/components.conf widget/gtk/
 
 cat "$repo/theme/bande.css" >> browser/themes/linux/browser.css
 python3 "$repo/scripts/fetch-tracking-lists.py" .

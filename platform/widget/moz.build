@@ -1,0 +1,108 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+DIRS += ["wayland", "/third_party/gbm/libgbm"]
+
+if CONFIG["MOZ_ENABLE_VAAPI"]:
+    DIRS += ["vaapitest"]
+
+if CONFIG["MOZ_ENABLE_V4L2"]:
+    DIRS += ["v4l2test"]
+
+if CONFIG["MOZ_ENABLE_VULKAN_VIDEO"]:
+    DIRS += ["vulkantest"]
+
+EXPORTS += [
+    "MozContainer.h",
+    "nsAppShell.h",
+    "nsGtkUtils.h",
+]
+
+EXPORTS.mozilla += [
+    "GfxInfo.h",
+    "GfxInfoUtils.h",
+    "WidgetUtilsGtk.h",
+]
+
+EXPORTS.mozilla.widget += [
+    "CompositorWidgetChild.h",
+    "CompositorWidgetParent.h",
+    "DMABufDevice.h",
+    "DMABufFormats.h",
+    "DMABufSurface.h",
+    "GtkCompositorWidget.h",
+    "InProcessGtkCompositorWidget.h",
+    "nsWaylandDisplay.h",
+    "va_drmcommon.h",
+    "WaylandBuffer.h",
+    "WaylandSurface.h",
+    "WaylandSurfaceLock.h",
+    "WindowSurface.h",
+    "WindowSurfaceProvider.h",
+]
+
+UNIFIED_SOURCES += [
+    "BandeHost.cpp",
+    "BandeKeys.cpp",
+    "CompositorWidgetChild.cpp",
+    "CompositorWidgetParent.cpp",
+    "DMABufDevice.cpp",
+    "DMABufFormats.cpp",
+    "DMABufSurface.cpp",
+    "GfxInfo.cpp",
+    "GtkCompositorWidget.cpp",
+    "InProcessGtkCompositorWidget.cpp",
+    "NativeMenuSupport.cpp",
+    "nsAppShell.cpp",
+    "nsBandeIdleService.cpp",
+    "nsLookAndFeel.cpp",
+    "nsWaylandDisplay.cpp",
+    "nsWidgetFactory.cpp",
+    "WaylandBuffer.cpp",
+    "WaylandSurface.cpp",
+    "WaylandSurfaceLock.cpp",
+    "WidgetUtilsGtk.cpp",
+    "WindowSurfaceProvider.cpp",
+    "WindowSurfaceWaylandMultiBuffer.cpp",
+]
+
+SOURCES += [
+    "MediaKeysEventSourceFactory.cpp",
+    "nsWindow.cpp",
+    "WaylandVsyncSource.cpp",
+]
+
+XPCOM_MANIFESTS += [
+    "components.conf",
+]
+
+include("/ipc/chromium/chromium-config.mozbuild")
+
+FINAL_LIBRARY = "xul"
+
+LOCAL_INCLUDES += [
+    "/layout/base",
+    "/layout/forms",
+    "/layout/generic",
+    "/layout/xul",
+    "/widget",
+    "/widget/headless",
+]
+
+CXXFLAGS += CONFIG["MOZ_GBM_CFLAGS"]
+if not CONFIG["MOZ_SYSTEM_GBM"]:
+    LOCAL_INCLUDES += [
+        "/third_party/gbm/gbm/",
+    ]
+    DIRS += [
+        "/third_party/gbm/gbm/",
+    ]
+
+CXXFLAGS += CONFIG["MOZ_LIBDRM_CFLAGS"]
+if not CONFIG["MOZ_SYSTEM_LIBDRM"]:
+    LOCAL_INCLUDES += [
+        "/third_party/drm/drm/",
+        "/third_party/drm/drm/include/",
+        "/third_party/drm/drm/include/libdrm",
+    ]
