@@ -12,7 +12,13 @@ impl fmt::Display for Error {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Kind {
     Interface,
+    Mixin,
     Namespace,
+    Dictionary,
+    Callback,
+    CallbackInterface,
+    Enum,
+    Typedef,
 }
 
 #[derive(Debug)]
@@ -22,24 +28,73 @@ pub struct Definition {
     pub parent: Option<String>,
     pub extended: Vec<String>,
     pub members: Vec<Member>,
+    pub fields: Vec<Argument>,
+    pub alias: Option<Type>,
+}
+
+impl Definition {
+    pub fn attribute(&self, name: &str) -> Option<&str> {
+        extended_value(&self.extended, name)
+    }
+}
+
+pub fn extended_value<'a>(extended: &'a [String], name: &str) -> Option<&'a str> {
+    extended.iter().find_map(|attribute| {
+        if attribute == name {
+            Some("")
+        } else {
+            attribute
+                .strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix('='))
+        }
+    })
 }
 
 #[derive(Clone, Debug)]
 pub enum Type {
     Named { name: String, nullable: bool },
     Sequence { inner: Box<Type>, nullable: bool },
+    Union { members: Vec<Type>, nullable: bool },
 }
 
-#[derive(Debug)]
+impl Type {
+    pub fn with_nullable(self, value: bool) -> Type {
+        match self {
+            Type::Named { name, .. } => Type::Named {
+                name,
+                nullable: value,
+            },
+            Type::Sequence { inner, .. } => Type::Sequence {
+                inner,
+                nullable: value,
+            },
+            Type::Union { members, .. } => Type::Union {
+                members,
+                nullable: value,
+            },
+        }
+    }
+
+    pub fn nullable(&self) -> bool {
+        match self {
+            Type::Named { nullable, .. }
+            | Type::Sequence { nullable, .. }
+            | Type::Union { nullable, .. } => *nullable,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Argument {
     pub name: String,
     pub ty: Type,
     pub optional: bool,
     pub variadic: bool,
     pub default: Option<String>,
+    pub extended: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Member {
     Constant {
         name: String,
@@ -49,12 +104,20 @@ pub enum Member {
         name: String,
         ty: Type,
         readonly: bool,
+        stringifier: bool,
+        extended: Vec<String>,
     },
     Operation {
         name: String,
         returns: Type,
         arguments: Vec<Argument>,
+        is_static: bool,
+        extended: Vec<String>,
     },
+    Constructor {
+        arguments: Vec<Argument>,
+    },
+    Iterable,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -203,11 +266,11 @@ impl Parser {
             match self.next()? {
                 Token::Symbol(']') if depth == 0 => break,
                 Token::Symbol(',') if depth == 0 => attributes.push(std::mem::take(&mut current)),
-                Token::Symbol(open @ ('(' | '[')) => {
+                Token::Symbol(open @ '(') => {
                     depth += 1;
                     current.push(open);
                 }
-                Token::Symbol(close @ (')' | ']')) => {
+                Token::Symbol(close @ ')') => {
                     depth -= 1;
                     current.push(close);
                 }
@@ -225,12 +288,31 @@ impl Parser {
     }
 
     fn ty(&mut self) -> Result<Type, Error> {
-        let ty = if self.eat_word("sequence") {
+        self.extended()?;
+        let ty = if self.eat_symbol('(') {
+            let mut members = vec![self.ty()?];
+            while self.eat_word("or") {
+                members.push(self.ty()?);
+            }
+            self.symbol(')')?;
+            Type::Union {
+                members,
+                nullable: false,
+            }
+        } else if self.eat_word("sequence") {
             self.symbol('<')?;
             let inner = self.ty()?;
             self.symbol('>')?;
             Type::Sequence {
                 inner: Box::new(inner),
+                nullable: false,
+            }
+        } else if self.eat_word("Promise") {
+            self.symbol('<')?;
+            self.ty()?;
+            self.symbol('>')?;
+            Type::Named {
+                name: "any".to_owned(),
                 nullable: false,
             }
         } else {
@@ -249,19 +331,29 @@ impl Parser {
             }
         };
         Ok(if self.eat_symbol('?') {
-            match ty {
-                Type::Named { name, .. } => Type::Named {
-                    name,
-                    nullable: true,
-                },
-                Type::Sequence { inner, .. } => Type::Sequence {
-                    inner,
-                    nullable: true,
-                },
-            }
+            ty.with_nullable(true)
         } else {
             ty
         })
+    }
+
+    fn default(&mut self) -> Result<Option<String>, Error> {
+        if !self.eat_symbol('=') {
+            return Ok(None);
+        }
+        Ok(Some(match self.next()? {
+            Token::Word(word) | Token::Number(word) => word,
+            Token::Text(text) => format!("\"{text}\""),
+            Token::Symbol('{') => {
+                self.symbol('}')?;
+                "{}".to_owned()
+            }
+            Token::Symbol('[') => {
+                self.symbol(']')?;
+                "[]".to_owned()
+            }
+            other => return Err(Error(format!("bad default {other:?}"))),
+        }))
     }
 
     fn arguments(&mut self) -> Result<Vec<Argument>, Error> {
@@ -271,7 +363,7 @@ impl Parser {
             return Ok(arguments);
         }
         loop {
-            self.extended()?;
+            let extended = self.extended()?;
             let optional = self.eat_word("optional");
             let ty = self.ty()?;
             let variadic = self.peek() == Some(&Token::Ellipsis);
@@ -279,21 +371,14 @@ impl Parser {
                 self.at += 1;
             }
             let name = self.word()?;
-            let default = if self.eat_symbol('=') {
-                Some(match self.next()? {
-                    Token::Word(word) | Token::Number(word) => word,
-                    Token::Text(text) => format!("\"{text}\""),
-                    other => return Err(Error(format!("bad default {other:?}"))),
-                })
-            } else {
-                None
-            };
+            let default = self.default()?;
             arguments.push(Argument {
                 name,
                 ty,
                 optional,
                 variadic,
                 default,
+                extended,
             });
             if self.eat_symbol(')') {
                 return Ok(arguments);
@@ -303,7 +388,7 @@ impl Parser {
     }
 
     fn member(&mut self) -> Result<Member, Error> {
-        self.extended()?;
+        let extended = self.extended()?;
         if self.eat_word("const") {
             self.ty()?;
             let name = self.word()?;
@@ -315,12 +400,33 @@ impl Parser {
             self.symbol(';')?;
             return Ok(Member::Constant { name, value });
         }
+        if self.eat_word("constructor") {
+            let arguments = self.arguments()?;
+            self.symbol(';')?;
+            return Ok(Member::Constructor { arguments });
+        }
+        if self.eat_word("iterable") {
+            self.symbol('<')?;
+            self.ty()?;
+            self.symbol('>')?;
+            self.symbol(';')?;
+            return Ok(Member::Iterable);
+        }
+        let stringifier = self.eat_word("stringifier");
+        let is_static = self.eat_word("static");
+        self.eat_word("getter");
         let readonly = self.eat_word("readonly");
         if self.eat_word("attribute") {
             let ty = self.ty()?;
             let name = self.word()?;
             self.symbol(';')?;
-            return Ok(Member::Attribute { name, ty, readonly });
+            return Ok(Member::Attribute {
+                name,
+                ty,
+                readonly,
+                stringifier,
+                extended,
+            });
         }
         let returns = self.ty()?;
         let name = self.word()?;
@@ -330,57 +436,175 @@ impl Parser {
             name,
             returns,
             arguments,
+            is_static,
+            extended,
         })
     }
 
-    fn definition(&mut self) -> Result<(Definition, bool), Error> {
-        let extended = self.extended()?;
-        let partial = self.eat_word("partial");
-        let kind = match self.word()?.as_str() {
-            "interface" => Kind::Interface,
-            "namespace" => Kind::Namespace,
-            other => return Err(Error(format!("unsupported definition {other}"))),
-        };
-        let name = self.word()?;
-        let parent = if self.eat_symbol(':') {
-            Some(self.word()?)
-        } else {
-            None
-        };
-        self.symbol('{')?;
-        let mut members = Vec::new();
+    fn fields(&mut self) -> Result<Vec<Argument>, Error> {
+        let mut fields = Vec::new();
         while !self.eat_symbol('}') {
-            members.push(self.member()?);
+            let extended = self.extended()?;
+            let required = self.eat_word("required");
+            let ty = self.ty()?;
+            let name = self.word()?;
+            let default = self.default()?;
+            self.symbol(';')?;
+            fields.push(Argument {
+                name,
+                ty,
+                optional: !required,
+                variadic: false,
+                default,
+                extended,
+            });
         }
         self.symbol(';')?;
-        Ok((
-            Definition {
-                kind,
-                name,
-                parent,
-                extended,
-                members,
-            },
-            partial,
-        ))
+        Ok(fields)
+    }
+
+    fn definition(&mut self, includes: &mut Vec<(String, String)>) -> Result<Option<(Definition, bool)>, Error> {
+        let extended = self.extended()?;
+        let partial = self.eat_word("partial");
+        let mut definition = Definition {
+            kind: Kind::Interface,
+            name: String::new(),
+            parent: None,
+            extended,
+            members: Vec::new(),
+            fields: Vec::new(),
+            alias: None,
+        };
+        let first = self.word()?;
+        match first.as_str() {
+            "interface" | "namespace" => {
+                definition.kind = if first == "namespace" {
+                    Kind::Namespace
+                } else if self.eat_word("mixin") {
+                    Kind::Mixin
+                } else {
+                    Kind::Interface
+                };
+            }
+            "dictionary" => {
+                definition.kind = Kind::Dictionary;
+                definition.name = self.word()?;
+                if self.eat_symbol(':') {
+                    definition.parent = Some(self.word()?);
+                }
+                self.symbol('{')?;
+                definition.fields = self.fields()?;
+                return Ok(Some((definition, partial)));
+            }
+            "callback" => {
+                if self.eat_word("interface") {
+                    definition.kind = Kind::CallbackInterface;
+                    definition.name = self.word()?;
+                    self.symbol('{')?;
+                    while !self.eat_symbol('}') {
+                        self.member()?;
+                    }
+                    self.symbol(';')?;
+                } else {
+                    definition.kind = Kind::Callback;
+                    definition.name = self.word()?;
+                    self.symbol('=')?;
+                    self.ty()?;
+                    self.arguments()?;
+                    self.symbol(';')?;
+                }
+                return Ok(Some((definition, false)));
+            }
+            "enum" => {
+                definition.kind = Kind::Enum;
+                definition.name = self.word()?;
+                self.symbol('{')?;
+                while !self.eat_symbol('}') {
+                    self.next()?;
+                }
+                self.symbol(';')?;
+                return Ok(Some((definition, false)));
+            }
+            "typedef" => {
+                definition.kind = Kind::Typedef;
+                definition.alias = Some(self.ty()?);
+                definition.name = self.word()?;
+                self.symbol(';')?;
+                return Ok(Some((definition, false)));
+            }
+            other => {
+                if self.eat_word("includes") {
+                    let mixin = self.word()?;
+                    self.symbol(';')?;
+                    includes.push((other.to_owned(), mixin));
+                    return Ok(None);
+                }
+                return Err(Error(format!("unsupported definition {other}")));
+            }
+        }
+        definition.name = self.word()?;
+        if self.eat_symbol(':') {
+            definition.parent = Some(self.word()?);
+        }
+        self.symbol('{')?;
+        while !self.eat_symbol('}') {
+            definition.members.push(self.member()?);
+        }
+        self.symbol(';')?;
+        Ok(Some((definition, partial)))
     }
 }
 
-pub fn parse(source: &str, definitions: &mut Vec<Definition>) -> Result<(), Error> {
-    let mut parser = Parser {
-        tokens: tokenize(source)?,
-        at: 0,
-    };
-    while parser.peek().is_some() {
-        let (definition, partial) = parser.definition()?;
-        match definitions
-            .iter_mut()
-            .find(|known| known.name == definition.name)
-        {
-            Some(known) if partial => known.members.extend(definition.members),
-            Some(_) => return Err(Error(format!("{} is defined twice", definition.name))),
-            None => definitions.push(definition),
+pub struct Parsed {
+    pub definitions: Vec<Definition>,
+    includes: Vec<(String, String)>,
+}
+
+impl Parsed {
+    pub fn new() -> Self {
+        Parsed {
+            definitions: Vec::new(),
+            includes: Vec::new(),
         }
     }
-    Ok(())
+
+    pub fn parse(&mut self, source: &str) -> Result<(), Error> {
+        let mut parser = Parser {
+            tokens: tokenize(source)?,
+            at: 0,
+        };
+        while parser.peek().is_some() {
+            let Some((definition, partial)) = parser.definition(&mut self.includes)? else {
+                continue;
+            };
+            match self
+                .definitions
+                .iter_mut()
+                .find(|known| known.name == definition.name)
+            {
+                Some(known) if partial => known.members.extend(definition.members),
+                Some(_) => return Err(Error(format!("{} is defined twice", definition.name))),
+                None => self.definitions.push(definition),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<Vec<Definition>, Error> {
+        for (interface, mixin) in std::mem::take(&mut self.includes) {
+            let members = self
+                .definitions
+                .iter()
+                .find(|definition| definition.name == mixin && definition.kind == Kind::Mixin)
+                .map(|definition| definition.members.clone())
+                .ok_or_else(|| Error(format!("no mixin {mixin}")))?;
+            let target = self
+                .definitions
+                .iter_mut()
+                .find(|definition| definition.name == interface)
+                .ok_or_else(|| Error(format!("no interface {interface}")))?;
+            target.members.extend(members);
+        }
+        Ok(self.definitions)
+    }
 }

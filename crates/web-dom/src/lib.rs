@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
 use web_atoms::{Atom, AtomTable};
-use web_html::{Attributes, TreeSink};
+use web_html::{Attributes, Options, Parser, TreeSink};
 
 pub use web_atoms::{Namespace, QualName};
 pub use web_html::QuirksMode;
@@ -34,6 +34,7 @@ pub enum NodeKind {
     Comment,
     ProcessingInstruction,
     Fragment,
+    Attribute,
 }
 
 #[derive(Clone, Copy)]
@@ -77,7 +78,6 @@ pub struct Document {
     text: String,
     atoms: AtomTable,
     templates: Vec<(NodeId, NodeId)>,
-    doctype_ids: (String, String),
     quirks_mode: QuirksMode,
     idents: Vec<Ident>,
     class_atoms: Vec<Atom>,
@@ -102,7 +102,6 @@ impl Document {
             text: String::new(),
             atoms: AtomTable::new(),
             templates: Vec::new(),
-            doctype_ids: (String::new(), String::new()),
             quirks_mode: QuirksMode::NoQuirks,
             idents: Vec::new(),
             class_atoms: Vec::new(),
@@ -288,8 +287,12 @@ impl Document {
             .map(|node| self.atoms.name(node.name))
     }
 
-    pub fn doctype_ids(&self) -> (&str, &str) {
-        (&self.doctype_ids.0, &self.doctype_ids.1)
+    pub fn doctype_ids(&self, id: NodeId) -> (&str, &str) {
+        let text = self
+            .node(id)
+            .filter(|node| node.kind == NodeKind::Doctype)
+            .map_or("", |node| span_text(&self.text, node.data));
+        text.split_once('\0').unwrap_or((text, ""))
     }
 
     pub fn processing_instruction_target(&self, id: NodeId) -> Option<&str> {
@@ -382,6 +385,7 @@ impl Document {
             };
             let (start, len) = (node.data.start as usize, node.data.len as usize);
             if start + len != self.attributes.len() {
+                self.garbage += size_of::<AttributeSlot>() * len;
                 let existing = self.attributes.get(start..start + len).unwrap_or_default();
                 let moved = existing.to_vec();
                 self.attributes.extend(moved);
@@ -425,6 +429,7 @@ impl Document {
             None => self.add_attributes_if_missing(element, [(name, value)]),
         }
         if name == QualName::attribute(Atom::ID) || name == QualName::attribute(Atom::CLASS) {
+            self.garbage += size_of::<Ident>() + size_of::<Atom>() * self.classes(element).len();
             self.update_ident(element);
         }
         self.compact();
@@ -443,7 +448,7 @@ impl Document {
         };
         let mut kept = slots.to_vec();
         let removed = kept.remove(offset);
-        self.garbage += removed.value.len as usize;
+        self.garbage += removed.value.len as usize + size_of::<AttributeSlot>() * slots.len();
         let start = self.attributes.len() as u32;
         let len = kept.len() as u32;
         self.attributes.extend(kept);
@@ -485,10 +490,13 @@ impl Document {
         for node in &mut self.nodes {
             if matches!(
                 node.kind,
-                NodeKind::Text | NodeKind::Comment | NodeKind::ProcessingInstruction
+                NodeKind::Text
+                    | NodeKind::Comment
+                    | NodeKind::ProcessingInstruction
+                    | NodeKind::Doctype
+                    | NodeKind::Attribute
             ) {
-                let value = span_text(&self.text, node.data).to_owned();
-                node.data = push_span(&mut text, &value);
+                node.data = push_span(&mut text, span_text(&self.text, node.data));
             }
         }
         self.text = text;
@@ -514,6 +522,32 @@ impl Document {
         }
         self.attribute_text = attribute_text;
         self.attributes = attributes;
+        let mut idents = Vec::with_capacity(self.idents.len() / 2);
+        let mut class_atoms = Vec::with_capacity(self.class_atoms.len() / 2);
+        for node in &mut self.nodes {
+            let Some(ident) = self.idents.get(node.ident as usize).copied() else {
+                continue;
+            };
+            let start = class_atoms.len() as u32;
+            class_atoms.extend_from_slice(
+                self.class_atoms
+                    .get(
+                        ident.classes.start as usize
+                            ..(ident.classes.start + ident.classes.len) as usize,
+                    )
+                    .unwrap_or_default(),
+            );
+            node.ident = idents.len() as u32;
+            idents.push(Ident {
+                id: ident.id,
+                classes: Span {
+                    start,
+                    len: ident.classes.len,
+                },
+            });
+        }
+        self.idents = idents;
+        self.class_atoms = class_atoms;
     }
 
     pub fn create_fragment(&mut self) -> NodeId {
@@ -542,10 +576,96 @@ impl Document {
     }
 
     pub fn append_doctype(&mut self, name: &str, public_id: &str, system_id: &str) {
-        let name = self.atoms.intern(name);
-        let doctype = self.push(NodeKind::Doctype, Namespace::Html, name, EMPTY);
-        self.doctype_ids = (public_id.to_owned(), system_id.to_owned());
+        let doctype = self.create_doctype(name, public_id, system_id);
         self.insert(NodeId::DOCUMENT, doctype, None);
+    }
+
+    pub fn create_doctype(&mut self, name: &str, public_id: &str, system_id: &str) -> NodeId {
+        let name = self.atoms.intern(name);
+        let start = self.text.len() as u32;
+        self.text.push_str(public_id);
+        self.text.push('\0');
+        self.text.push_str(system_id);
+        let data = Span {
+            start,
+            len: self.text.len() as u32 - start,
+        };
+        self.push(NodeKind::Doctype, Namespace::Html, name, data)
+    }
+
+    pub fn create_document_node(&mut self) -> NodeId {
+        self.push(NodeKind::Document, Namespace::Html, Atom::HTML, EMPTY)
+    }
+
+    pub fn create_attribute_node(&mut self, name: QualName, value: &str) -> NodeId {
+        let data = push_span(&mut self.text, value);
+        self.push(NodeKind::Attribute, name.ns, name.local, data)
+    }
+
+    pub fn attribute_node_name(&self, id: NodeId) -> Option<QualName> {
+        self.node(id)
+            .filter(|node| node.kind == NodeKind::Attribute)
+            .map(|node| QualName {
+                ns: node.namespace,
+                local: node.name,
+            })
+    }
+
+    pub fn attribute_node_value(&self, id: NodeId) -> &str {
+        self.node(id)
+            .filter(|node| node.kind == NodeKind::Attribute)
+            .map_or("", |node| span_text(&self.text, node.data))
+    }
+
+    pub fn set_attribute_node_value(&mut self, id: NodeId, value: &str) {
+        let Some(node) = self.node(id).copied() else {
+            return;
+        };
+        if node.kind == NodeKind::Attribute {
+            self.garbage += node.data.len as usize;
+            let data = push_span(&mut self.text, value);
+            if let Some(node) = self.node_mut(id) {
+                node.data = data;
+            }
+            self.compact();
+        }
+    }
+
+    pub fn parse_into(&mut self, root: NodeId, html: &str) {
+        let mut parser = Parser::new(
+            RootedSink {
+                document: self,
+                root,
+            },
+            Options {
+                scripting: true,
+                ..Options::default()
+            },
+        );
+        parser.feed_str(html);
+        parser.finish();
+    }
+
+    pub fn parse_fragment(&mut self, context: QualName, html: &str, scripting: bool) -> NodeId {
+        let holder = self.create_fragment();
+        let mut parser = Parser::new_fragment(
+            RootedSink {
+                document: self,
+                root: holder,
+            },
+            context,
+            Options {
+                scripting,
+                ..Options::default()
+            },
+        );
+        parser.feed_str(html);
+        parser.finish();
+        let fragment = self.create_fragment();
+        if let Some(root) = self.first_child(holder) {
+            self.reparent_children(root, fragment);
+        }
+        fragment
     }
 
     pub fn insert(&mut self, parent: NodeId, child: NodeId, reference: Option<NodeId>) {
@@ -685,8 +805,6 @@ impl Document {
             + self.templates.capacity() * size_of::<(NodeId, NodeId)>()
             + self.idents.capacity() * size_of::<Ident>()
             + self.class_atoms.capacity() * size_of::<Atom>()
-            + self.doctype_ids.0.capacity()
-            + self.doctype_ids.1.capacity()
             + self.atoms.heap_bytes()
     }
 }
@@ -749,6 +867,70 @@ impl TreeSink for Document {
     fn set_quirks_mode(&mut self, mode: QuirksMode) {
         self.quirks_mode = mode;
     }
+}
+
+struct RootedSink<'a> {
+    document: &'a mut Document,
+    root: NodeId,
+}
+
+impl TreeSink for RootedSink<'_> {
+    type Node = NodeId;
+
+    fn intern(&mut self, name: &str) -> Atom {
+        self.document.atoms.intern(name)
+    }
+
+    fn document(&self) -> NodeId {
+        self.root
+    }
+
+    fn create_element(&mut self, name: QualName, attributes: Attributes<'_>) -> NodeId {
+        Document::create_element(self.document, name, attributes.iter())
+    }
+
+    fn create_comment(&mut self, text: &str) -> NodeId {
+        Document::create_comment(self.document, text)
+    }
+
+    fn create_processing_instruction(&mut self, target: &str, data: &str) -> NodeId {
+        Document::create_processing_instruction(self.document, target, data)
+    }
+
+    fn append_doctype(&mut self, name: &str, public_id: &str, system_id: &str) {
+        let doctype = self.document.create_doctype(name, public_id, system_id);
+        self.document.insert(self.root, doctype, None);
+    }
+
+    fn insert(&mut self, parent: NodeId, child: NodeId, before: Option<NodeId>) {
+        Document::insert(self.document, parent, child, before)
+    }
+
+    fn insert_text(&mut self, parent: NodeId, before: Option<NodeId>, text: &str) {
+        Document::insert_text(self.document, parent, before, text)
+    }
+
+    fn parent(&self, node: NodeId) -> Option<NodeId> {
+        Document::parent(self.document, node)
+    }
+
+    fn detach(&mut self, node: NodeId) {
+        Document::detach(self.document, node)
+    }
+
+    fn reparent_children(&mut self, from: NodeId, to: NodeId) {
+        Document::reparent_children(self.document, from, to)
+    }
+
+    fn add_attributes_if_missing(&mut self, element: NodeId, attributes: Attributes<'_>) {
+        Document::add_attributes_if_missing(self.document, element, attributes.iter())
+    }
+
+    fn template_contents(&mut self, template: NodeId) -> NodeId {
+        self.document.template_fragment(template)
+    }
+
+    fn set_quirks_mode(&mut self, _mode: QuirksMode) {}
 }
 
 const EMPTY: Span = Span { start: 0, len: 0 };

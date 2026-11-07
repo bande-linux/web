@@ -11,6 +11,22 @@ pub(crate) struct Context<'a> {
     pub(crate) anchor: Option<NodeId>,
 }
 
+pub fn selector_matches(
+    document: &Document,
+    list: &SelectorList,
+    element: NodeId,
+    scope: Option<NodeId>,
+) -> bool {
+    let context = Context {
+        document,
+        namespaces: &[],
+        anchor: scope,
+    };
+    list.0
+        .iter()
+        .any(|selector| matches(&context, selector, element))
+}
+
 pub(crate) fn matches(context: &Context<'_>, selector: &Selector, element: NodeId) -> bool {
     selector.pseudo_element.is_none() && matches_components(context, &selector.components, element)
 }

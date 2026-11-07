@@ -1,8 +1,45 @@
-use crate::bindings::{Interface, install_members, install_namespaces};
+use crate::bindings::{Interface, NAMESPACES, SPECS};
 use crate::engine::{
-    Context, FunctionObjectBuilder, JsNativeError, JsObject, JsResult, JsString, JsValue, Native,
-    NativeFunction, PropertyDescriptor,
+    Context, FunctionObjectBuilder, JsNativeError, JsObject, JsResult, JsString, JsSymbol, JsValue,
+    Native, NativeFunction, PropertyDescriptor,
 };
+
+pub enum Member {
+    Constant {
+        name: &'static str,
+        value: f64,
+    },
+    Attribute {
+        name: &'static str,
+        get: Native,
+        set: Option<Native>,
+    },
+    Method {
+        name: &'static str,
+        native: Native,
+        length: usize,
+    },
+    Static {
+        name: &'static str,
+        native: Native,
+        length: usize,
+    },
+}
+
+pub struct Spec {
+    pub interface: Interface,
+    pub name: &'static str,
+    pub constructor: Option<(Native, usize)>,
+    pub global: bool,
+    pub visible: bool,
+    pub iterable: bool,
+    pub members: &'static [Member],
+}
+
+pub struct NamespaceSpec {
+    pub name: &'static str,
+    pub members: &'static [Member],
+}
 
 fn function(name: &str, native: Native, length: usize, context: &mut Context) -> JsObject {
     FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(native))
@@ -12,7 +49,7 @@ fn function(name: &str, native: Native, length: usize, context: &mut Context) ->
         .into()
 }
 
-pub fn attribute(
+fn attribute(
     target: &JsObject,
     name: &str,
     getter: Native,
@@ -32,66 +69,54 @@ pub fn attribute(
     Ok(())
 }
 
-pub fn method(
+fn data(
     target: &JsObject,
-    name: &str,
-    native: Native,
-    length: usize,
+    key: impl Into<crate::engine::PropertyKey>,
+    value: JsValue,
+    writable: bool,
+    enumerable: bool,
+    configurable: bool,
     context: &mut Context,
 ) -> JsResult<()> {
-    let value = function(name, native, length, context);
     target.define_property_or_throw(
-        JsString::from(name),
+        key,
         PropertyDescriptor::builder()
             .value(value)
-            .writable(true)
-            .enumerable(true)
-            .configurable(true)
+            .writable(writable)
+            .enumerable(enumerable)
+            .configurable(configurable)
             .build(),
         context,
     )?;
     Ok(())
 }
 
-pub fn constant(
+fn members(
     target: &JsObject,
     constructor: Option<&JsObject>,
-    name: &str,
-    value: i32,
+    list: &[Member],
     context: &mut Context,
 ) -> JsResult<()> {
-    for object in std::iter::once(target).chain(constructor) {
-        object.define_property_or_throw(
-            JsString::from(name),
-            PropertyDescriptor::builder()
-                .value(value)
-                .writable(false)
-                .enumerable(true)
-                .configurable(false)
-                .build(),
-            context,
-        )?;
+    for member in list {
+        match member {
+            Member::Constant { name, value } => {
+                for object in std::iter::once(target).chain(constructor) {
+                    data(object, JsString::from(*name), JsValue::from(*value), false, true, false, context)?;
+                }
+            }
+            Member::Attribute { name, get, set } => attribute(target, name, *get, *set, context)?,
+            Member::Method { name, native, length } => {
+                let value = function(name, *native, *length, context);
+                data(target, JsString::from(*name), JsValue::from(value), true, true, true, context)?;
+            }
+            Member::Static { name, native, length } => {
+                let value = function(name, *native, *length, context);
+                if let Some(constructor) = constructor {
+                    data(constructor, JsString::from(*name), JsValue::from(value), true, true, true, context)?;
+                }
+            }
+        }
     }
-    Ok(())
-}
-
-pub fn namespace(global: &JsObject, name: &str, context: &mut Context) -> JsResult<JsObject> {
-    let object = JsObject::with_object_proto(context.intrinsics());
-    hidden(global, name, JsValue::from(object.clone()), context)?;
-    Ok(object)
-}
-
-fn hidden(target: &JsObject, name: &str, value: JsValue, context: &mut Context) -> JsResult<()> {
-    target.define_property_or_throw(
-        JsString::from(name),
-        PropertyDescriptor::builder()
-            .value(value)
-            .writable(true)
-            .enumerable(false)
-            .configurable(true)
-            .build(),
-        context,
-    )?;
     Ok(())
 }
 
@@ -101,55 +126,73 @@ fn illegal(_this: &JsValue, _arguments: &[JsValue], _context: &mut Context) -> J
         .into())
 }
 
+fn array_method(name: &str, context: &mut Context) -> JsResult<JsValue> {
+    let prototype = context.intrinsics().constructors().array().prototype();
+    prototype.get(JsString::from(name), context)
+}
+
 pub fn interfaces(context: &mut Context) -> JsResult<Vec<JsObject>> {
     let global = context.global_object();
     let object_prototype = context.intrinsics().constructors().object().prototype();
-    let mut prototypes: Vec<JsObject> = Vec::with_capacity(Interface::ALL.len());
-    for &interface in Interface::ALL {
-        let parent = interface
-            .parent()
-            .and_then(|parent| Interface::ALL.iter().position(|known| *known == parent))
-            .and_then(|index| prototypes.get(index).cloned())
-            .unwrap_or_else(|| object_prototype.clone());
-        let prototype = JsObject::with_null_proto();
-        prototype.set_prototype(Some(parent));
-        let constructor =
-            FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(illegal))
-                .name(JsString::from(interface.name()))
-                .length(0)
+    let mut prototypes = Vec::with_capacity(SPECS.len());
+    let mut constructors: Vec<JsObject> = Vec::with_capacity(SPECS.len());
+    for spec in SPECS {
+        let (native, length) = spec.constructor.unwrap_or((illegal, 0));
+        let constructor: JsObject =
+            FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(native))
+                .name(JsString::from(spec.name))
+                .length(length)
                 .constructor(true)
-                .build();
-        let constructor: JsObject = constructor.into();
-        constructor.define_property_or_throw(
-            JsString::from("prototype"),
-            PropertyDescriptor::builder()
-                .value(prototype.clone())
-                .writable(false)
-                .enumerable(false)
-                .configurable(false)
-                .build(),
-            context,
-        )?;
-        hidden(
-            &prototype,
-            "constructor",
-            JsValue::from(constructor.clone()),
-            context,
-        )?;
-        hidden(
-            &global,
-            interface.name(),
-            JsValue::from(constructor.clone()),
-            context,
-        )?;
-        if interface == Interface::Window {
-            global.set_prototype(Some(prototype.clone()));
-            install_members(interface, &global, Some(&constructor), context)?;
-        } else {
-            install_members(interface, &prototype, Some(&constructor), context)?;
+                .build()
+                .into();
+        let prototype = JsObject::with_null_proto();
+        data(&constructor, crate::engine::js_string!("prototype"), JsValue::from(prototype.clone()), false, false, false, context)?;
+        data(&prototype, crate::engine::js_string!("constructor"), JsValue::from(constructor.clone()), true, false, true, context)?;
+        data(&prototype, JsSymbol::to_string_tag(), crate::engine::text(spec.name), false, false, true, context)?;
+        if spec.visible {
+            data(&global, JsString::from(spec.name), JsValue::from(constructor.clone()), true, false, true, context)?;
         }
         prototypes.push(prototype);
+        constructors.push(constructor);
     }
-    install_namespaces(&global, context)?;
+    for (index, spec) in SPECS.iter().enumerate() {
+        let parent = spec.interface.parent().map(|parent| parent as usize);
+        let prototype = prototypes.get(index).cloned();
+        let constructor = constructors.get(index).cloned();
+        let (Some(prototype), Some(constructor)) = (prototype, constructor) else {
+            continue;
+        };
+        let parent_prototype = parent.and_then(|parent| prototypes.get(parent).cloned());
+        let is_exception = spec.interface == Interface::DOMException;
+        let chained = if is_exception {
+            context.intrinsics().constructors().error().prototype()
+        } else {
+            parent_prototype.unwrap_or_else(|| object_prototype.clone())
+        };
+        prototype.set_prototype(Some(chained));
+        if let Some(parent) = parent.and_then(|parent| constructors.get(parent).cloned()) {
+            constructor.set_prototype(Some(parent));
+        }
+        if spec.global {
+            global.set_prototype(Some(prototype.clone()));
+            members(&global, Some(&constructor), spec.members, context)?;
+        } else {
+            members(&prototype, Some(&constructor), spec.members, context)?;
+        }
+        if spec.iterable {
+            let values = array_method("values", context)?;
+            data(&prototype, JsSymbol::iterator(), values.clone(), true, false, true, context)?;
+            data(&prototype, crate::engine::js_string!("values"), values, true, true, true, context)?;
+            for name in ["keys", "entries", "forEach"] {
+                let value = array_method(name, context)?;
+                data(&prototype, JsString::from(name), value, true, true, true, context)?;
+            }
+        }
+    }
+    for namespace in NAMESPACES {
+        let object = JsObject::with_object_proto(context.intrinsics());
+        data(&global, JsString::from(namespace.name), JsValue::from(object.clone()), true, false, true, context)?;
+        members(&object, None, namespace.members, context)?;
+    }
     Ok(prototypes)
 }

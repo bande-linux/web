@@ -7,6 +7,7 @@ mod stylist;
 use std::sync::Arc;
 
 pub use cascade::{Pseudo, Restyle, Styles};
+pub use matching::selector_matches;
 pub use stylist::{Stylist, Viewport};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
