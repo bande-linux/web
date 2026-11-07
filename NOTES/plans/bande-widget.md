@@ -38,11 +38,7 @@ Aim: none. Outside `widget/gtk`, it is used for:
 - **Screen capture:** libwebrtc's portal code uses GIO in 11 files under `third_party/libwebrtc`. A replacement of those files is the one part that touches vendored code; decided at that stage.
 
 ## Accessibility
-Screen readers must keep working: the GTK dependency isn't dropped from the package until this stage passes.
-- `accessible/atk` is 4,986 lines over ATK, and `atk-bridge` turns ATK into AT-SPI. ATK and the bridge need GLib but not GTK.
-- **Native AT-SPI over `zbus` (preferred):** AT-SPI is pull-based, as Gecko's accessible tree and its cross-process cache are, and it removes ATK and GLib.
-- **AccessKit:** used by the toolkit, but it pushes node data. Gecko would have to push every text run of every page across processes. To be measured before rejecting it.
-- **Keep ATK and its bridge:** the fallback if native AT-SPI can't match it. Keeps GLib.
+Owner's decision: no AT-SPI server for now, and it doesn't hold back dropping GTK. Accessibility is built with `--disable-accessibility`, so screen readers don't work in the browser until this is picked up. The seam stays clean: `accessible/atk` is left untouched, and a later native AT-SPI server over `zbus` replaces it there.
 
 ## Why this over the alternatives
 - **New toolkit name in the build system:** cleaner name, but a patch queue about 5 times larger (225 files against about 50, including the 13 ATK files) and the conflict risk the owner excluded.
@@ -70,6 +66,6 @@ About 40 small patches' worth of hunks in about 40 existing files, about 500 cha
 ## Stages
 1. This plan.
 2. Proof: no libgtk in `readelf -d`, a Bande window rendering a real page, pointer and keyboard, under the real headless compositor on a build VM. The proof build turns off D-Bus, Wi-Fi scanning, WebRTC, printing and accessibility. Each comes back at its stage below, and none of this ships until they have.
-3. Then, each driven by real input: tabs and the combined row; popups and menus; clipboard and drag; input methods; fullscreen; HiDPI and real screens; file dialogs; printing; accessibility; theme and dark mode; screen capture and WebRTC; single instance; idle, wake lock, media keys, keyring, gamepads, file icons.
+3. Then, each driven by real input: tabs and the combined row; popups and menus; clipboard and drag; input methods; fullscreen; HiDPI and real screens; file dialogs; printing; theme and dark mode; screen capture and WebRTC; single instance; idle, wake lock, media keys, keyring, gamepads, file icons.
    Printing: Firefox produces its own PDF and hands it to desktop's print path: the `org.freedesktop.impl.portal.Print` portal, `bande-file-chooser --print`, `bande-printd`, with the dialog parented through xdg-foreign.
 4. Drop GTK from the package's dependencies; measure the default-install size on a VM.
