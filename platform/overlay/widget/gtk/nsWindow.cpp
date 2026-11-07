@@ -10,6 +10,11 @@
 #include "ScreenHelperBande.h"
 #include "WaylandVsyncSource.h"
 #include "mozilla/BasicEvents.h"
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/LookAndFeel.h"
+#include "mozilla/PresShell.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/widget/PlatformWidgetTypes.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/StaticPrefs_widget.h"
 #include "mozilla/TextEventDispatcher.h"
@@ -40,6 +45,8 @@ static const uint32_t kBandeButtonForward = 4;
 static const uint32_t kBandeScrollWheel = 0;
 static const double kWheelLinesPerPoint = 3.0 / 120.0;
 
+bool gUseStableRounding = true;
+
 static nsTHashMap<uint64_t, nsWindow*>& LiveWindows() {
   static nsTHashMap<uint64_t, nsWindow*> sWindows;
   return sWindows;
@@ -61,7 +68,7 @@ class BandeTextListener final : public TextEventDispatcherListener {
                             uint32_t, void*) override {}
 
  private:
-  ~BandeTextListener() override = default;
+  ~BandeTextListener() = default;
 };
 
 NS_IMPL_ISUPPORTS(BandeTextListener, TextEventDispatcherListener,
@@ -104,7 +111,6 @@ void nsWindow::Destroy() {
     return;
   }
   mIsDestroyed = true;
-  mCreated = false;
   Show(false);
   DestroyCompositor();
   if (mVsyncSource) {
@@ -126,7 +132,7 @@ void nsWindow::Destroy() {
 double nsWindow::FractionalScaleFactor() const {
   if (mContainer.mSurface) {
     double scale = mContainer.mSurface->GetScale();
-    if (scale != sNoScale) {
+    if (scale != WaylandSurface::sNoScale) {
       return scale;
     }
   }
@@ -217,11 +223,6 @@ void nsWindow::Paint() {
   if (!listener) {
     return;
   }
-  listener->WillPaintWindow(this);
-  listener = GetPaintListener();
-  if (!listener) {
-    return;
-  }
   WindowRenderer* renderer = GetWindowRenderer();
   if (renderer) {
     if (WebRenderLayerManager* layerManager = renderer->AsWebRender()) {
@@ -238,10 +239,6 @@ void nsWindow::Paint() {
     }
   }
   listener->PaintWindow(this);
-  listener = GetPaintListener();
-  if (listener) {
-    listener->DidPaintWindow();
-  }
 }
 
 void nsWindow::Invalidate(const LayoutDeviceIntRect&) {
@@ -298,7 +295,9 @@ void nsWindow::RefreshScale() {
   BandeHost::Size(mBandeWindow, &width, &height);
   RefreshBounds(width, height);
   if (mWidgetListener) {
-    mWidgetListener->UIResolutionChanged();
+    if (PresShell* presShell = mWidgetListener->GetPresShell()) {
+      presShell->BackingScaleFactorChanged();
+    }
   }
 }
 
@@ -545,8 +544,7 @@ void nsWindow::DispatchPointer(const BandeEvent& aEvent) {
   DispatchInputEvent(&event);
   if (message == eMouseDown && event.mButton == MouseButton::eSecondary &&
       !mIsDestroyed) {
-    WidgetPointerEvent contextMenu(true, eContextMenu, this,
-                                   WidgetMouseEvent::eReal);
+    WidgetPointerEvent contextMenu(true, eContextMenu, this);
     contextMenu.mRefPoint = ToDevice(aEvent.x, aEvent.y);
     contextMenu.mModifiers = ModifiersOf(aEvent.modifiers);
     contextMenu.mButton = MouseButton::eSecondary;

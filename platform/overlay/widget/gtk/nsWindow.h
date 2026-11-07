@@ -71,10 +71,14 @@ extern mozilla::LazyLogModule gWidgetWaylandLog;
 typedef uintptr_t Window;
 #endif
 
-namespace mozilla::widget {
-class PlatformCompositorWidgetDelegate;
+namespace mozilla {
 class WaylandVsyncSource;
-}  // namespace mozilla::widget
+namespace widget {
+class PlatformCompositorWidgetDelegate;
+}  // namespace widget
+}  // namespace mozilla
+
+extern bool gUseStableRounding;
 
 class nsWindow final : public nsIWidget {
  public:
@@ -85,6 +89,13 @@ class nsWindow final : public nsIWidget {
   NS_INLINE_DECL_REFCOUNTING_INHERITED(nsWindow, nsIWidget)
 
   static void HandleBandeEvent(const mozilla::widget::BandeEvent& aEvent);
+  static nsWindow* FromWidget(nsIWidget* aWidget) {
+    if (aWidget && aWidget->IsNativeWidget()) {
+      return static_cast<nsWindow*>(aWidget);
+    }
+    return nullptr;
+  }
+  static nsWindow* FromWidget(nsWindow*) = delete;
 
   nsresult Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
                   const mozilla::widget::InitData& aInitData) override;
@@ -172,7 +183,7 @@ class nsWindow final : public nsIWidget {
   InputContext mInputContext;
   mozilla::widget::PlatformCompositorWidgetDelegate* mCompositorWidgetDelegate =
       nullptr;
-  RefPtr<mozilla::widget::WaylandVsyncSource> mVsyncSource;
+  RefPtr<mozilla::WaylandVsyncSource> mVsyncSource;
   RefPtr<mozilla::VsyncDispatcher> mVsyncDispatcher;
   mozilla::UniquePtr<mozilla::Mutex> mCompositorVsyncDispatcherLock;
   uint16_t mPressedButtons = 0;
