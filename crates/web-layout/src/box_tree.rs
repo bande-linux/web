@@ -127,11 +127,13 @@ pub(crate) struct InlineContent {
 #[derive(Default)]
 pub struct BoxTree {
     pub(crate) root: Option<BlockBox>,
+    pub(crate) keeps_text: bool,
 }
 
 const MAX_DEPTH: u32 = 512;
 
 struct Builder<'a> {
+    keeps_text: bool,
     document: &'a Document,
     styles: &'a Styles,
     fonts: &'a mut Fonts,
@@ -172,10 +174,19 @@ impl Pending {
 
 impl BoxTree {
     pub fn build(document: &Document, styles: &Styles, fonts: &mut Fonts) -> Self {
+        Self::building(document, styles, fonts, false)
+    }
+
+    pub fn build_keeping_text(document: &Document, styles: &Styles, fonts: &mut Fonts) -> Self {
+        Self::building(document, styles, fonts, true)
+    }
+
+    fn building(document: &Document, styles: &Styles, fonts: &mut Fonts, keeps_text: bool) -> Self {
         let mut builder = Builder {
             document,
             styles,
             fonts,
+            keeps_text,
             depth: 0,
             counters: Vec::new(),
         };
@@ -186,7 +197,7 @@ impl BoxTree {
                 let style = styles.get(root)?.clone();
                 Some(builder.block(root, style, None))
             });
-        BoxTree { root }
+        BoxTree { root, keeps_text }
     }
 
     pub fn heap_bytes(&self) -> usize {
@@ -981,8 +992,12 @@ impl Builder<'_> {
         pending.items.shrink_to_fit();
         pending.atomics.shrink_to_fit();
         pending.out_of_flow.shrink_to_fit();
+        let shaped = match self.keeps_text {
+            true => pending.paragraph.shape_with_source(self.fonts),
+            false => pending.paragraph.shape(self.fonts),
+        };
         InlineContent {
-            shaped: pending.paragraph.shape(self.fonts),
+            shaped,
             items: pending.items,
             atomics: pending.atomics,
             out_of_flow: pending.out_of_flow,

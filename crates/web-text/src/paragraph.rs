@@ -112,6 +112,7 @@ pub struct Lines {
     pub lines: Vec<Line>,
     pub items: Vec<LineItem>,
     pub glyphs: Vec<Glyph>,
+    pub clusters: Vec<u32>,
     pub height: f32,
 }
 
@@ -233,6 +234,14 @@ impl Paragraph {
     }
 
     pub fn shape(self, fonts: &mut Fonts) -> ShapedParagraph {
+        self.shaped(fonts, false)
+    }
+
+    pub fn shape_with_source(self, fonts: &mut Fonts) -> ShapedParagraph {
+        self.shaped(fonts, true)
+    }
+
+    fn shaped(self, fonts: &mut Fonts, keep_source: bool) -> ShapedParagraph {
         let levels = self.levels();
         let base = if self.rtl { 1 } else { 0 };
         let level_at = |position: usize| {
@@ -245,6 +254,7 @@ impl Paragraph {
             offsets: Vec::new(),
             spans: Vec::new(),
             styles: self.runs.iter().map(|&(_, style, _)| style).collect(),
+            source: None,
         };
         let mut clusters = Vec::new();
         for (run_index, (range, style, piece)) in self.run_ranges().enumerate() {
@@ -336,6 +346,12 @@ impl Paragraph {
         shaped.glyphs.shrink_to_fit();
         shaped.offsets.shrink_to_fit();
         shaped.spans.shrink_to_fit();
+        if keep_source {
+            shaped.source = Some(Box::new(Source {
+                text: self.text,
+                clusters,
+            }));
+        }
         shaped
     }
 
@@ -439,6 +455,8 @@ impl Paragraph {
     }
 }
 
+pub const NO_TEXT: u32 = u32::MAX;
+
 const SPACE: u8 = 1;
 const BREAK: u8 = 2;
 const MANDATORY: u8 = 4;
@@ -487,6 +505,12 @@ pub struct ShapedParagraph {
     offsets: Vec<(u32, f32, f32)>,
     spans: Vec<Span>,
     styles: Vec<RunStyle>,
+    source: Option<Box<Source>>,
+}
+
+struct Source {
+    text: String,
+    clusters: Vec<u32>,
 }
 
 struct Segment {
@@ -497,6 +521,10 @@ struct Segment {
 }
 
 impl ShapedParagraph {
+    pub fn source_text(&self) -> Option<&str> {
+        self.source.as_ref().map(|source| source.text.as_str())
+    }
+
     pub fn heap_bytes(&self) -> usize {
         self.glyphs.capacity() * size_of::<ShapedGlyph>()
             + self.offsets.capacity() * size_of::<(u32, f32, f32)>()
@@ -737,6 +765,11 @@ impl ShapedParagraph {
                     lines
                         .glyphs
                         .push(Glyph::new(glyph.id, pen - start + x_offset, -y_offset));
+                    if let Some(source) = &self.source {
+                        lines
+                            .clusters
+                            .push(source.clusters.get(index).copied().unwrap_or(NO_TEXT));
+                    }
                 }
                 pen += Self::advance(glyph, atomics);
                 if glyph.flags & SPACE != 0 {

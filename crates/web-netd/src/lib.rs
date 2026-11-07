@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::ToSocketAddrs;
 use std::os::unix::fs::DirBuilderExt;
@@ -15,7 +15,7 @@ use web_ipc::{
     Channel, Destination, FromNetwork, NetworkControl, ToNetwork, Url, Verdict, Writer, sandbox,
     sealed,
 };
-use web_net::{Clear, FetchError, FetchId, Fetcher, Response, Storage};
+use web_net::{Clear, FetchError, FetchId, Fetcher, Response, Storage, Transfer};
 
 pub const HOST: u32 = 0;
 pub const STORAGE_FLAG: &str = "--storage";
@@ -64,6 +64,7 @@ fn run() -> io::Result<()> {
         clients: HashMap::new(),
         sessions: HashMap::new(),
         running: HashMap::new(),
+        saving: HashSet::new(),
         intercept: false,
         paused: HashMap::new(),
         next_request: 0,
@@ -98,6 +99,7 @@ struct Network {
     clients: HashMap<u32, Client>,
     sessions: HashMap<u32, Fetcher>,
     running: HashMap<(u32, FetchId), (u32, u64)>,
+    saving: HashSet<u64>,
     intercept: bool,
     paused: HashMap<u64, Paused>,
     next_request: u64,
@@ -194,7 +196,23 @@ impl Network {
                     destination,
                     top_level: None,
                 })?,
-                NetworkControl::Cancel { id } => self.cancel(HOST, id),
+                NetworkControl::Cancel { id } => {
+                    self.saving.remove(&id);
+                    self.cancel(HOST, id);
+                }
+                NetworkControl::Save { id } => {
+                    let file = std::fs::File::from(message.fd()?);
+                    let found = self
+                        .running
+                        .iter()
+                        .find(|(_, owner)| **owner == (HOST, id))
+                        .map(|(key, _)| *key);
+                    if let Some((session, fetch)) = found
+                        && let Some(fetcher) = self.sessions.get_mut(&session)
+                    {
+                        fetcher.save(fetch, file);
+                    }
+                }
                 NetworkControl::Connect {
                     client,
                     session,
@@ -215,6 +233,20 @@ impl Network {
                 }
                 NetworkControl::EndSession { session } => {
                     self.sessions.remove(&session);
+                    let ended: Vec<u64> = self
+                        .running
+                        .iter()
+                        .filter(|((running, _), (client, id))| {
+                            *running == session && *client == HOST && self.saving.contains(id)
+                        })
+                        .map(|(_, (_, id))| *id)
+                        .collect();
+                    for id in ended {
+                        self.saving.remove(&id);
+                        let error = Some("the private window closed".to_owned());
+                        self.host
+                            .send(&FromNetwork::Saved { id, error }, Vec::new())?;
+                    }
                     self.running.retain(|(running, _), _| *running != session);
                     self.paused
                         .retain(|_, paused| paused.request.session != session);
@@ -436,7 +468,7 @@ impl Network {
         let fetcher = self.fetcher(request.session)?;
         let fetch = fetcher.request(match &request.top_level {
             Some(top_level) => web_net::Request::subresource(request.url, top_level),
-            None => web_net::Request::navigation(request.url, None),
+            None => web_net::Request::navigation(request.url, None).offering_saving(),
         });
         self.running
             .insert((request.session, fetch), (request.client, request.id));
@@ -463,10 +495,41 @@ impl Network {
         let Some(fetcher) = self.sessions.get_mut(&session) else {
             return Ok(());
         };
-        for (fetch, result) in fetcher.completed() {
+        let transfers = fetcher.transfers();
+        let completed = fetcher.completed();
+        for transfer in transfers {
+            let (fetch, message) = match transfer {
+                Transfer::Offered(fetch, offer) => (fetch, Err(offer)),
+                Transfer::Progress(fetch, received) => (fetch, Ok(received)),
+            };
+            let Some((HOST, id)) = self.running.get(&(session, fetch)).copied() else {
+                continue;
+            };
+            let message = match message {
+                Err(offer) => {
+                    self.saving.insert(id);
+                    FromNetwork::Offered {
+                        id,
+                        url: offer.url,
+                        content_type: offer.content_type,
+                        name: offer.name,
+                        length: offer.length,
+                    }
+                }
+                Ok(received) => FromNetwork::Progress { id, received },
+            };
+            self.host.send(&message, Vec::new())?;
+        }
+        for (fetch, result) in completed {
             let Some((client, id)) = self.running.remove(&(session, fetch)) else {
                 continue;
             };
+            if client == HOST && self.saving.remove(&id) {
+                let error = result.err().map(|error| error.to_string());
+                self.host
+                    .send(&FromNetwork::Saved { id, error }, Vec::new())?;
+                continue;
+            }
             let (message, fds) = reply(id, result);
             if client == HOST {
                 self.host.send(&message, fds)?;

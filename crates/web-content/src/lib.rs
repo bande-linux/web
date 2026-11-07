@@ -1,3 +1,6 @@
+mod find;
+mod reader;
+
 use std::sync::Arc;
 
 use encoding_rs::Encoding;
@@ -11,6 +14,7 @@ use web_layout::{BoxFragment, BoxTree, Fragment};
 use web_paint::DisplayList;
 use web_style::{Styles, Stylist};
 
+pub use find::TextIndex;
 pub use web_style::Viewport;
 pub use web_text::Fonts;
 
@@ -511,6 +515,28 @@ impl Page {
         record_tops(&self.document, &fragments.root, 0.0, &mut self.tops);
         self.tops.shrink_to_fit();
         self.fragment_bytes = fragments.heap_bytes();
+    }
+
+    pub fn is_readable(&self) -> bool {
+        reader::is_readable(&self.document, &self.styles)
+    }
+
+    pub fn reader_document(&self, site: &str, style: &str) -> Option<Document> {
+        let title = self.title();
+        let html = reader::article(&self.document, &self.styles, title.as_deref(), site, style)?;
+        Some(parse(html.as_bytes()))
+    }
+
+    pub fn text_index(&self, fonts: &mut Fonts) -> TextIndex {
+        fonts.set_scope(self.scope);
+        let boxes = BoxTree::build_keeping_text(&self.document, &self.styles, fonts);
+        let images = &self.images;
+        let tree = boxes.layout(
+            (self.viewport.width, self.viewport.height),
+            fonts,
+            &|source| images.size(source),
+        );
+        TextIndex::new(&tree)
     }
 
     pub fn release_image_pixels(&mut self) {

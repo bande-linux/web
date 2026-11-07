@@ -11,7 +11,8 @@ pub use channel::{Channel, MAX_FDS, MAX_MESSAGE, Message};
 pub use launch::{Program, inherited_control, inherited_network};
 pub use list::{LinkTable, MAX_LIST, Painted, Patch, Sent, Splice};
 pub use messages::{
-    Destination, FromNetwork, FromRenderer, NetworkControl, Size, ToNetwork, ToRenderer, Verdict,
+    Destination, FoundRect, FromNetwork, FromRenderer, NetworkControl, Size, ToNetwork, ToRenderer,
+    Verdict,
 };
 pub use url::Url;
 pub use wire::{Malformed, Reader, Wire, Writer};

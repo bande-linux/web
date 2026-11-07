@@ -5,7 +5,7 @@ use web_style::{
     Clear, Color, ComputedStyle, Float, LengthPercentage, Position, Sides, TextAlign,
     TextDecorations,
 };
-use web_text::{AtomicSize, FontId, Fonts, Glyph, Lines};
+use web_text::{AtomicSize, FontId, Fonts, Glyph, Lines, NO_TEXT};
 
 use crate::box_tree::{
     BlockBox, BoxTree, Contents, InlineContent, InlineFrame, InlineItem, ItemKind, is_rtl,
@@ -172,6 +172,9 @@ struct Absolute<'b> {
 pub(crate) struct Flow<'a, 'b> {
     pub(crate) fonts: &'a mut Fonts,
     pub(crate) glyphs: Vec<Glyph>,
+    keeps_text: bool,
+    text: String,
+    clusters: Vec<u32>,
     pub(crate) images: ImageSizes<'a>,
     viewport: (f32, f32),
     absolutes: Vec<Absolute<'b>>,
@@ -187,6 +190,9 @@ impl BoxTree {
         let mut flow = Flow {
             fonts,
             glyphs: Vec::new(),
+            keeps_text: self.keeps_text,
+            text: String::new(),
+            clusters: Vec::new(),
             images,
             viewport,
             absolutes: Vec::new(),
@@ -219,6 +225,8 @@ impl BoxTree {
         FragmentTree {
             root,
             glyphs: flow.glyphs,
+            text: flow.text,
+            clusters: flow.clusters,
         }
     }
 }
@@ -308,13 +316,23 @@ fn resolve_height(value: LengthPercentage, cb: Option<f32>) -> Option<f32> {
 }
 
 impl<'a, 'b> Flow<'a, 'b> {
-    pub(crate) fn mark(&self) -> (usize, usize) {
-        (self.glyphs.len(), self.absolutes.len())
+    pub(crate) fn mark(&self) -> (usize, usize, usize) {
+        (self.glyphs.len(), self.absolutes.len(), self.text.len())
     }
 
-    pub(crate) fn rewind(&mut self, mark: (usize, usize)) {
+    pub(crate) fn rewind(&mut self, mark: (usize, usize, usize)) {
         self.glyphs.truncate(mark.0);
         self.absolutes.truncate(mark.1);
+        self.text.truncate(mark.2);
+        self.clusters.truncate(mark.0);
+    }
+
+    fn keep_clusters(&mut self, base: u32, clusters: &[u32]) {
+        if self.keeps_text {
+            self.clusters
+                .extend(clusters.iter().map(|cluster| base + cluster));
+            self.clusters.resize(self.glyphs.len(), NO_TEXT);
+        }
     }
 
     pub(crate) fn register_absolute(&mut self, block: &'b BlockBox, origin: (f32, f32)) {
@@ -953,6 +971,11 @@ impl<'a, 'b> Flow<'a, 'b> {
         atomics: &mut [Option<(Laid, AtomicSize)>],
         children: &mut Vec<Fragment>,
     ) {
+        let base = self.text.len() as u32;
+        if let Some(text) = inline.shaped.source_text() {
+            self.text.push_str(text);
+            self.text.push('\n');
+        }
         for line in &lines.lines {
             let free = (line.available - line.width).max(0.0);
             let offset = line.left
@@ -1047,6 +1070,8 @@ impl<'a, 'b> Flow<'a, 'b> {
                 }
                 let start = self.glyphs.len() as u32;
                 self.glyphs.extend_from_slice(glyphs);
+                let clusters = lines.clusters.get(item.glyphs.clone()).unwrap_or_default();
+                self.keep_clusters(base, clusters);
                 children.push(Fragment::Text(self.text(
                     Some(source.node),
                     &source.style,
@@ -1163,6 +1188,7 @@ impl<'a, 'b> Flow<'a, 'b> {
             let glyphs = lines.glyphs.get(item.glyphs.clone()).unwrap_or_default();
             let start = self.glyphs.len() as u32;
             self.glyphs.extend_from_slice(glyphs);
+            self.keep_clusters(0, &[]);
             let x = if is_rtl(style) {
                 content.0 + content.1 + gap + item.x
             } else {

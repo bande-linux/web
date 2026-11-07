@@ -5,10 +5,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use rustix::event::{PollFd, PollFlags, poll};
-use web_content::{Fonts, Page, Viewport};
+use web_content::{Fonts, Page, TextIndex, Viewport};
 use web_ipc::{
-    Channel, Destination, FromNetwork, FromRenderer, LinkTable, Mapping, Message, Patch, Sent,
-    Size, ToNetwork, ToRenderer, Url, sandbox,
+    Channel, Destination, FoundRect, FromNetwork, FromRenderer, LinkTable, Mapping, Message, Patch,
+    Sent, Size, ToNetwork, ToRenderer, Url, Writer, sandbox,
 };
 use web_paint::{DisplayList, Item, Rect};
 
@@ -16,6 +16,7 @@ pub const MAX_BODY: usize = 64 << 20;
 const MAX_STYLESHEETS: usize = 64;
 const MAX_IMAGES: usize = 256;
 const MAX_FONTS: usize = 32;
+const READER_EMPTY: &str = "<!doctype html><title></title>";
 
 pub fn main() -> ExitCode {
     match run() {
@@ -55,6 +56,8 @@ fn run() -> io::Result<()> {
         },
         resized: false,
         hover: None,
+        finding: None,
+        reader: false,
     };
     renderer.run(&mut fonts)
 }
@@ -90,6 +93,14 @@ struct Renderer {
     viewport: Viewport,
     resized: bool,
     hover: Option<(u64, f32, f32)>,
+    finding: Option<Finding>,
+    reader: bool,
+}
+
+struct Finding {
+    query: String,
+    index: Option<TextIndex>,
+    stale: bool,
 }
 
 fn borrowed(arrived: &[(String, Vec<u8>)]) -> Vec<(&str, &[u8])> {
@@ -153,6 +164,7 @@ impl Renderer {
             self.add_images(fonts)?;
             self.add_fonts(fonts)?;
             self.relayout(fonts)?;
+            self.find(fonts)?;
             if commands > acknowledged {
                 acknowledged = commands;
                 self.control
@@ -245,36 +257,46 @@ impl Renderer {
                 load,
                 url,
                 charset,
+                kind,
                 viewport,
             } => {
-                self.cancel(fonts)?;
                 let mapping = fd
                     .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
                     .and_then(|fd| Mapping::new(&fd, MAX_BODY))?;
-                let document = web_content::parse_with_charset(mapping.bytes(), charset.as_deref());
+                let document = match kind {
+                    Some(kind) => viewed(&url, &kind, mapping.bytes(), charset.as_deref()),
+                    None => web_content::parse_with_charset(mapping.bytes(), charset.as_deref()),
+                };
                 drop(mapping);
                 self.viewport = Viewport {
                     width: viewport.width.max(1.0),
                     height: viewport.height.max(1.0),
                 };
-                self.resized = false;
-                self.images_attempted = 0;
-                self.web_fonts_attempted = 0;
-                self.images_sent.clear();
-                self.sent = None;
-                if let Some(mut shown) = self.shown.take() {
-                    shown.page.release(fonts);
+                self.reader = false;
+                self.commit(load, url, document, fonts)?;
+            }
+            ToRenderer::Reader { load, site, style } => {
+                let current = self
+                    .shown
+                    .as_ref()
+                    .map(|shown| (shown.url.clone(), shown.page.reader_document(&site, &style)));
+                let Some((url, document)) = current else {
+                    return Ok(());
+                };
+                let document =
+                    document.unwrap_or_else(|| web_content::parse(READER_EMPTY.as_bytes()));
+                self.reader = true;
+                self.commit(load, url, document, fonts)?;
+            }
+            ToRenderer::Find { load, query } => {
+                if self.shown.as_ref().is_some_and(|shown| shown.load == load) {
+                    let index = self.finding.take().and_then(|finding| finding.index);
+                    self.finding = (!query.is_empty()).then_some(Finding {
+                        query,
+                        index,
+                        stale: true,
+                    });
                 }
-                self.styling = Some(Styling {
-                    shown: Shown {
-                        load,
-                        url,
-                        page: Page::with_viewport(document, self.viewport, fonts),
-                    },
-                    fetches: Vec::new(),
-                    arrived: Vec::new(),
-                    attempted: Vec::new(),
-                });
             }
             ToRenderer::Resize { viewport } => {
                 let Size { width, height } = viewport;
@@ -301,11 +323,80 @@ impl Renderer {
         Ok(())
     }
 
+    fn commit(
+        &mut self,
+        load: u64,
+        url: Url,
+        document: web_dom::Document,
+        fonts: &mut Fonts,
+    ) -> io::Result<()> {
+        self.cancel(fonts)?;
+        self.finding = None;
+        self.resized = false;
+        self.images_attempted = 0;
+        self.web_fonts_attempted = 0;
+        self.images_sent.clear();
+        self.sent = None;
+        if let Some(mut shown) = self.shown.take() {
+            shown.page.release(fonts);
+        }
+        self.styling = Some(Styling {
+            shown: Shown {
+                load,
+                url,
+                page: Page::with_viewport(document, self.viewport, fonts),
+            },
+            fetches: Vec::new(),
+            arrived: Vec::new(),
+            attempted: Vec::new(),
+        });
+        Ok(())
+    }
+
+    fn find(&mut self, fonts: &mut Fonts) -> io::Result<()> {
+        let Some(shown) = &self.shown else {
+            return Ok(());
+        };
+        let load = shown.load;
+        let Some(finding) = self.finding.as_mut().filter(|finding| finding.stale) else {
+            return Ok(());
+        };
+        finding.stale = false;
+        let index = finding
+            .index
+            .get_or_insert_with(|| shown.page.text_index(fonts));
+        let mut rects = Vec::new();
+        for (found, parts) in index.find(&finding.query).into_iter().enumerate() {
+            rects.extend(parts.into_iter().map(|rect| FoundRect {
+                found: found as u32,
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            }));
+        }
+        let mut writer = Writer::default();
+        writer.put(&rects);
+        let blob = web_ipc::sealed(&writer.into_bytes())?;
+        self.control.send(&FromRenderer::Found { load }, vec![blob])
+    }
+
+    fn geometry_changed(&mut self) {
+        if let Some(finding) = &mut self.finding {
+            finding.index = None;
+            finding.stale = true;
+        }
+    }
+
     fn fetched(&mut self, message: Message) -> io::Result<()> {
         let (id, ok) = match message.decode::<FromNetwork>()? {
             FromNetwork::Fetched { id, status, .. } => (id, (200..300).contains(&status)),
             FromNetwork::Failed { id, .. } => (id, false),
-            FromNetwork::Paused { .. } | FromNetwork::SiteData { .. } => {
+            FromNetwork::Paused { .. }
+            | FromNetwork::SiteData { .. }
+            | FromNetwork::Offered { .. }
+            | FromNetwork::Progress { .. }
+            | FromNetwork::Saved { .. } => {
                 return Err(io::Error::from(io::ErrorKind::InvalidData));
             }
         };
@@ -380,6 +471,7 @@ impl Renderer {
             .fragment()
             .and_then(|name| shown.page.fragment_y(name));
         let load = shown.load;
+        let readable = !self.reader && shown.page.is_readable();
         let list = self.painted(&mut shown)?;
         self.shown = Some(shown);
         self.control.send(
@@ -387,6 +479,7 @@ impl Renderer {
                 load,
                 title,
                 fragment,
+                readable,
             },
             vec![list],
         )?;
@@ -428,6 +521,7 @@ impl Renderer {
         };
         shown.page.add_fonts(&borrowed(&arrived), fonts);
         drop(arrived);
+        self.geometry_changed();
         let relaid = self.relaid(&mut shown);
         self.shown = Some(shown);
         relaid?;
@@ -465,6 +559,7 @@ impl Renderer {
         };
         shown.page.add_images(&borrowed(&arrived), fonts);
         drop(arrived);
+        self.geometry_changed();
         let relaid = self.relaid(&mut shown);
         self.shown = Some(shown);
         relaid
@@ -480,6 +575,7 @@ impl Renderer {
         let mut changed = false;
         if resized {
             shown.page.resize(self.viewport.width, fonts);
+            self.geometry_changed();
             changed = true;
         }
         if let Some((load, x, y)) = hover
@@ -564,6 +660,42 @@ impl Renderer {
         self.sent = Some((Arc::clone(&shown.page.display_list), (links, targets)));
         web_ipc::sealed(&patch)
     }
+}
+
+fn escaped(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn viewed(url: &Url, kind: &str, body: &[u8], charset: Option<&str>) -> web_dom::Document {
+    let name = url
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .unwrap_or_default();
+    let html = match kind.starts_with("image/") {
+        true => format!(
+            "<!doctype html><meta charset=utf-8><title>{}</title>\
+             <style>body{{margin:0;min-height:100vh;display:flex;align-items:center;\
+             justify-content:center;background:#201e1a}}img{{max-width:100%}}</style>\
+             <img src=\"{}\">",
+            escaped(name),
+            escaped(url.as_str()),
+        ),
+        false => {
+            let encoding = charset
+                .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
+                .unwrap_or(encoding_rs::UTF_8);
+            format!(
+                "<!doctype html><meta charset=utf-8><title>{}</title>\
+                 <pre style=\"white-space:pre-wrap;margin:16px;font-size:13px\">{}</pre>",
+                escaped(name),
+                escaped(&encoding.decode(body).0),
+            )
+        }
+    };
+    web_content::parse(html.as_bytes())
 }
 
 fn links(page: &Page, base: &Url) -> (Vec<(Rect, u32)>, Vec<Url>) {

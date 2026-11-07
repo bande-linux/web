@@ -12,6 +12,8 @@ rustix = { workspace = true, features = ["event"] }
 web-content = { workspace = true, features = ["avif"] }
 web-ipc.workspace = true
 web-paint.workspace = true
+web-dom.workspace = true
+encoding_rs.workspace = true
 
 [lints]
 workspace = true

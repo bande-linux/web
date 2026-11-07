@@ -11,14 +11,14 @@ use linebender_resource_handle::{Blob, FontData};
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::time::{Itimerspec, TimerfdTimerFlags, Timespec, timerfd_settime};
 use web_ipc::{
-    Channel, Destination, FromNetwork, FromRenderer, MAX_LIST, Mapping, Message, NetworkControl,
-    Patch, Reader, Size, ToRenderer, Url, Verdict,
+    Channel, Destination, FoundRect, FromNetwork, FromRenderer, MAX_LIST, Mapping, Message,
+    NetworkControl, Patch, Reader, Size, ToRenderer, Url, Verdict,
 };
 use web_paint::{DisplayList, Image, Item, Rect};
 
 use crate::{
-    Clear, Command, Frame, Helpers, Links, LoadId, Outcome, PausedRequest, Placement, Session,
-    SiteData, Update, ViewId,
+    Clear, Command, DownloadId, Frame, Helpers, Links, LoadId, Offer, Outcome, PausedRequest,
+    Placement, Session, SiteData, Update, ViewId,
 };
 
 const HOST: u32 = 0;
@@ -28,6 +28,7 @@ const MAX_IMAGE_SIDE: u32 = 1 << 15;
 const MAX_IMAGE_BYTES: usize = 512 << 20;
 const MAX_TITLE: usize = 4096;
 const MAX_SITE_DATA: usize = 16 << 20;
+const MAX_FOUND: usize = 16 << 20;
 const RESTART_GAP: Duration = Duration::from_secs(5);
 
 struct Network {
@@ -101,6 +102,7 @@ pub(crate) struct Broker {
     site_requests: HashMap<u64, ViewId>,
     views: HashMap<ViewId, View>,
     navigations: HashMap<u64, Navigation>,
+    downloads: HashMap<u64, (ViewId, LoadId)>,
     next_fetch: u64,
     next_client: u32,
 }
@@ -153,6 +155,7 @@ impl Broker {
             site_requests: HashMap::new(),
             views: HashMap::new(),
             navigations: HashMap::new(),
+            downloads: HashMap::new(),
             next_fetch: 0,
             next_client: HOST,
         }
@@ -378,6 +381,14 @@ impl Broker {
         for view in requests {
             self.send(view, LoadId(0), Outcome::SiteData(Vec::new()));
         }
+        let downloads: Vec<(u64, (ViewId, LoadId))> = self.downloads.drain().collect();
+        for (id, (view, load)) in downloads {
+            let outcome = Outcome::Saved {
+                download: DownloadId(id),
+                error: Some("the network process stopped".to_owned()),
+            };
+            self.send(view, load, outcome);
+        }
         let recently = self
             .network_started
             .is_some_and(|started| started.elapsed() < RESTART_GAP);
@@ -545,6 +556,35 @@ impl Broker {
                 self.arm();
             }
             Command::Kill { view } => self.crash(view),
+            Command::Find { view, load, query } => {
+                let load = load.0;
+                self.tell_renderer(view, ToRenderer::Find { load, query }, Vec::new());
+            }
+            Command::Reader { view, load, style } => {
+                let Some(renderer) = self
+                    .views
+                    .get_mut(&view)
+                    .and_then(|view| view.renderer.as_mut())
+                else {
+                    return;
+                };
+                renderer.load = load;
+                renderer.images.clear();
+                renderer.image_bytes = 0;
+                renderer.shown = None;
+                let site = renderer.url.host_str().unwrap_or_default().to_owned();
+                let load = load.0;
+                self.tell_renderer(view, ToRenderer::Reader { load, site, style }, Vec::new());
+            }
+            Command::Save { download, file } => {
+                let id = download.0;
+                self.tell_network(NetworkControl::Save { id }, vec![file]);
+            }
+            Command::CancelDownload { download } => {
+                self.downloads.remove(&download.0);
+                let id = download.0;
+                self.tell_network(NetworkControl::Cancel { id }, Vec::new());
+            }
             Command::Resume { request, verdict } => {
                 self.tell_network(NetworkControl::Resume { request, verdict }, Vec::new());
             }
@@ -590,6 +630,43 @@ impl Broker {
                     url,
                     destination,
                 } => self.paused(request, client, id, url, destination),
+                FromNetwork::Offered {
+                    id,
+                    url,
+                    content_type,
+                    name,
+                    length,
+                } => {
+                    let Some(navigation) = self.navigations.remove(&id) else {
+                        self.tell_network(NetworkControl::Cancel { id }, Vec::new());
+                        continue;
+                    };
+                    if let Some(view) = self.views.get_mut(&navigation.view) {
+                        view.navigation = None;
+                    }
+                    self.downloads
+                        .insert(id, (navigation.view, navigation.load));
+                    let offer = Offer {
+                        download: DownloadId(id),
+                        url,
+                        kind: content_type,
+                        name,
+                        length,
+                    };
+                    self.send(navigation.view, navigation.load, Outcome::Offered(offer));
+                }
+                FromNetwork::Progress { id, received } => {
+                    if let Some(&(view, load)) = self.downloads.get(&id) {
+                        let download = DownloadId(id);
+                        self.send(view, load, Outcome::Progress { download, received });
+                    }
+                }
+                FromNetwork::Saved { id, error } => {
+                    if let Some((view, load)) = self.downloads.remove(&id) {
+                        let download = DownloadId(id);
+                        self.send(view, load, Outcome::Saved { download, error });
+                    }
+                }
                 FromNetwork::SiteData { request } => {
                     let fd = message.fd()?;
                     let mapping = Mapping::new(&fd, MAX_SITE_DATA)?;
@@ -656,7 +733,9 @@ impl Broker {
             return;
         };
         entry.navigation = None;
-        if let Some(kind) = content_type.filter(|_| !html) {
+        let kind = content_type.filter(|_| !html);
+        if let Some(kind) = kind.as_ref().filter(|kind| !web_net::is_viewable(kind)) {
+            let kind = kind.clone();
             return self.send(view, load, Outcome::Unsupported { url, kind });
         }
         let site = site(&url);
@@ -686,6 +765,7 @@ impl Broker {
             load: load.0,
             url,
             charset,
+            kind,
             viewport,
         };
         self.tell_renderer(view, commit, vec![body]);
@@ -797,6 +877,7 @@ impl Renderer {
                 load,
                 title,
                 fragment,
+                readable,
             } => {
                 let fd = message.fd()?;
                 if load != current.0 {
@@ -810,6 +891,7 @@ impl Renderer {
                     list,
                     links,
                     fragment,
+                    readable,
                 };
                 Ok(Some((current, Outcome::Frame(frame))))
             }
@@ -834,6 +916,31 @@ impl Renderer {
                     (true, false) => self.deadline,
                 };
                 Ok(recovered.then_some((current, Outcome::Responsive)))
+            }
+            FromRenderer::Found { load } => {
+                let fd = message.fd()?;
+                if load != current.0 {
+                    return Ok(None);
+                }
+                let mapping = Mapping::new(&fd, MAX_FOUND)?;
+                let mut reader = Reader::new(mapping.bytes());
+                let rects: Vec<FoundRect> = reader.get()?;
+                reader.finish()?;
+                let mut found: Vec<Vec<Rect>> = Vec::new();
+                for rect in rects {
+                    if rect.found as usize >= found.len() {
+                        found.resize(rect.found as usize + 1, Vec::new());
+                    }
+                    if let Some(parts) = found.get_mut(rect.found as usize) {
+                        parts.push(Rect {
+                            x: rect.x,
+                            y: rect.y,
+                            width: rect.width,
+                            height: rect.height,
+                        });
+                    }
+                }
+                Ok(Some((current, Outcome::Found(found))))
             }
             FromRenderer::Scroll { load, y } => {
                 Ok((load == current.0).then_some((current, Outcome::Scroll(y))))

@@ -29,3 +29,7 @@ name = "load"
 [[test]]
 name = "processes"
 harness = false
+
+[[test]]
+name = "features"
+harness = false

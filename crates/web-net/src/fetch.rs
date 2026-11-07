@@ -1,16 +1,23 @@
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
 use std::future::{Future, poll_fn};
 use std::io::{self, Write};
+use std::os::fd::OwnedFd;
 use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
+use std::task::Poll;
+use std::time::{Duration, Instant};
 
 use brotli_decompressor::DecompressorWriter;
 use flate2::write::{GzDecoder, ZlibDecoder};
 use hyper::body::{Body, Incoming};
 use hyper::header::{
-    ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_TYPE, COOKIE, HOST, HeaderMap, HeaderName,
-    IF_MODIFIED_SINCE, IF_NONE_MATCH, LOCATION, SET_COOKIE, STRICT_TRANSPORT_SECURITY, USER_AGENT,
+    ACCEPT, ACCEPT_ENCODING, CONTENT_DISPOSITION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE,
+    COOKIE, HOST, HeaderMap, HeaderName, IF_MODIFIED_SINCE, IF_NONE_MATCH, LOCATION, SET_COOKIE,
+    STRICT_TRANSPORT_SECURITY, USER_AGENT,
 };
 use hyper::{StatusCode, Uri};
 use rustls::ClientConfig;
@@ -23,7 +30,7 @@ use crate::reactor::Reactor;
 use crate::site::Site;
 use crate::storage::{self, State};
 use crate::stream::{Stream, dial};
-use crate::{ContentType, FetchError, Request, Response};
+use crate::{ContentType, Disposition, FetchError, FetchId, Offer, Request, Response, Transfer};
 
 pub const MAX_BODY: usize = 64 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 20;
@@ -35,34 +42,104 @@ const AGENT: &str = concat!(
 );
 const ACCEPTED: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 const ENCODINGS: &str = "gzip, deflate, br";
+const PROGRESS_BYTES: u64 = 256 * 1024;
+const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 
 pub(crate) struct Network {
     pub(crate) reactor: Rc<Reactor>,
     pub(crate) tls: Arc<ClientConfig>,
     pub(crate) state: RefCell<State>,
+    pub(crate) transfers: Sender<Transfer>,
+    pub(crate) ready: Arc<OwnedFd>,
+    pub(crate) saves: RefCell<HashMap<FetchId, File>>,
+    pub(crate) active: RefCell<HashSet<FetchId>>,
+}
+
+impl Network {
+    fn transfer(&self, id: FetchId, transfer: Transfer) {
+        self.active.borrow_mut().insert(id);
+        if self.transfers.send(transfer).is_ok() {
+            crate::executor::signal(&self.ready);
+        }
+    }
+}
+
+enum Wanted {
+    Nothing,
+    Body,
+    Offer,
 }
 
 struct Head {
     status: StatusCode,
     headers: HeaderMap,
     body: Option<Vec<u8>>,
+    saved: bool,
+}
+
+fn offered(status: StatusCode, headers: &HeaderMap) -> bool {
+    let attachment = headers
+        .get(CONTENT_DISPOSITION)
+        .is_some_and(|value| Disposition::parse(value.as_bytes()).attachment);
+    let too_large = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > MAX_BODY as u64);
+    let shown = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| ContentType::parse(value.as_bytes()))
+        .is_none_or(|content_type| content_type.is_html() || content_type.is_viewable());
+    status.is_success() && (attachment || too_large || !shown)
+}
+
+fn offer(url: &Url, headers: &HeaderMap) -> Offer {
+    Offer {
+        url: url.clone(),
+        content_type: headers
+            .get(CONTENT_TYPE)
+            .and_then(|value| ContentType::parse(value.as_bytes()))
+            .map(|content_type| content_type.essence),
+        name: headers
+            .get(CONTENT_DISPOSITION)
+            .and_then(|value| Disposition::parse(value.as_bytes()).name)
+            .or_else(|| name_in_path(url)),
+        length: headers
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok()),
+    }
+}
+
+fn name_in_path(url: &Url) -> Option<String> {
+    let segment = url.path_segments()?.rfind(|segment| !segment.is_empty())?;
+    Some(String::from_utf8_lossy(&crate::mime::percent_decoded(segment)).into_owned())
 }
 
 fn same_site(a: &Url, b: &Url) -> bool {
     Site::of(a).is_some() && Site::of(a) == Site::of(b)
 }
 
-pub(crate) async fn fetch(network: Rc<Network>, request: Request) -> Result<Response, FetchError> {
-    let result = fetch_following(&network, request).await;
+pub(crate) async fn fetch(
+    network: Rc<Network>,
+    id: FetchId,
+    request: Request,
+) -> Result<Response, FetchError> {
+    let result = fetch_following(&network, id, request).await;
     network.state.borrow_mut().persist();
     result
 }
 
-async fn fetch_following(network: &Network, request: Request) -> Result<Response, FetchError> {
+async fn fetch_following(
+    network: &Network,
+    id: FetchId,
+    request: Request,
+) -> Result<Response, FetchError> {
     let Request {
         mut url,
         top_level,
         initiator,
+        offers_saving,
     } = request;
     if url.scheme() == "data" {
         return crate::data::fetch(url);
@@ -88,7 +165,15 @@ async fn fetch_following(network: &Network, request: Request) -> Result<Response
         let stale = {
             let mut state = network.state.borrow_mut();
             match state.cache.lookup(&partition, &url, now) {
-                Lookup::Fresh(response) => return Ok(response),
+                Lookup::Fresh(response)
+                    if !offers_saving
+                        || response.content_type.as_ref().is_none_or(|content_type| {
+                            content_type.is_html() || content_type.is_viewable()
+                        }) =>
+                {
+                    return Ok(response);
+                }
+                Lookup::Fresh(_) => false,
                 Lookup::Stale {
                     etag,
                     last_modified,
@@ -107,8 +192,14 @@ async fn fetch_following(network: &Network, request: Request) -> Result<Response
             .header(&url, context, now);
         let cookie_sent = cookie.is_some();
         extra.extend(cookie.map(|cookie| (COOKIE, cookie)));
-        let head = exchange(network, &url, extra, |status, _| {
-            !(redirect_status(status) || (stale && status == StatusCode::NOT_MODIFIED))
+        let head = exchange(network, id, &url, extra, |status, headers| {
+            if redirect_status(status) || (stale && status == StatusCode::NOT_MODIFIED) {
+                Wanted::Nothing
+            } else if offers_saving && offered(status, headers) {
+                Wanted::Offer
+            } else {
+                Wanted::Body
+            }
         })
         .await?;
         let now = storage::now();
@@ -143,6 +234,7 @@ async fn fetch_following(network: &Network, request: Request) -> Result<Response
             url = target;
             continue;
         }
+        let saved = head.saved;
         let response = Response {
             content_type: head
                 .headers
@@ -152,6 +244,9 @@ async fn fetch_following(network: &Network, request: Request) -> Result<Response
             status: head.status.as_u16(),
             url,
         };
+        if saved {
+            return Ok(response);
+        }
         network.state.borrow_mut().cache.store(
             &partition,
             &response,
@@ -170,9 +265,10 @@ fn redirect_status(status: StatusCode) -> bool {
 
 async fn exchange(
     network: &Network,
+    id: FetchId,
     url: &Url,
     extra: Vec<(HeaderName, String)>,
-    wants_body: impl FnOnce(StatusCode, &HeaderMap) -> bool,
+    wanted: impl FnOnce(StatusCode, &HeaderMap) -> Wanted,
 ) -> Result<Head, FetchError> {
     let secure = match url.scheme() {
         "https" => true,
@@ -216,20 +312,40 @@ async fn exchange(
             .map_err(FetchError::Http)?;
         let status = response.status();
         let headers = response.headers().clone();
-        if !wants_body(status, &headers) {
-            return Ok(Head {
+        match wanted(status, &headers) {
+            Wanted::Nothing => Ok(Head {
                 status,
                 headers,
                 body: None,
-            });
+                saved: false,
+            }),
+            Wanted::Body => {
+                let decoder = Decoder::for_headers(&headers, Sink::Memory(Vec::new()))?;
+                let body = read_body(response.into_body(), decoder).await?;
+                Ok(Head {
+                    status,
+                    headers,
+                    body: Some(body),
+                    saved: false,
+                })
+            }
+            Wanted::Offer => {
+                network.transfer(id, Transfer::Offered(id, offer(url, &headers)));
+                let file = poll_fn(|_| match network.saves.borrow_mut().remove(&id) {
+                    Some(file) => Poll::Ready(file),
+                    None => Poll::Pending,
+                })
+                .await;
+                let decoder = Decoder::for_headers(&headers, Sink::File(file))?;
+                save_body(network, id, response.into_body(), decoder).await?;
+                Ok(Head {
+                    status,
+                    headers,
+                    body: None,
+                    saved: true,
+                })
+            }
         }
-        let decoder = Decoder::for_headers(&headers)?;
-        let body = read_body(response.into_body(), decoder).await?;
-        Ok(Head {
-            status,
-            headers,
-            body: Some(body),
-        })
     };
     let mut connection = pin!(connection);
     let mut response = pin!(response);
@@ -292,26 +408,63 @@ async fn read_body(mut body: Incoming, mut decoder: Decoder) -> Result<Vec<u8>, 
         }
         decoder.write_all(&data).map_err(decode_error)?;
     }
-    decoder.finish().map_err(decode_error)
+    match decoder.finish().map_err(decode_error)? {
+        Sink::Memory(bytes) => Ok(bytes),
+        Sink::File(_) => Ok(Vec::new()),
+    }
+}
+
+async fn save_body(
+    network: &Network,
+    id: FetchId,
+    mut body: Incoming,
+    mut decoder: Decoder,
+) -> Result<(), FetchError> {
+    let mut received = 0u64;
+    let mut reported = (0u64, Instant::now());
+    while let Some(frame) = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+        let Ok(data) = frame.map_err(FetchError::Http)?.into_data() else {
+            continue;
+        };
+        received += data.len() as u64;
+        decoder.write_all(&data).map_err(decode_error)?;
+        network.active.borrow_mut().insert(id);
+        if received - reported.0 >= PROGRESS_BYTES || reported.1.elapsed() >= PROGRESS_EVERY {
+            reported = (received, Instant::now());
+            network.transfer(id, Transfer::Progress(id, received));
+        }
+    }
+    decoder.finish().map_err(decode_error)?;
+    Ok(())
 }
 
 fn decode_error(error: io::Error) -> FetchError {
     if error.kind() == io::ErrorKind::FileTooLarge {
         FetchError::TooLarge
+    } else if error.raw_os_error().is_some() {
+        FetchError::Save(error)
     } else {
         FetchError::BadEncoding
     }
 }
 
-struct Limited(Vec<u8>);
+enum Sink {
+    Memory(Vec<u8>),
+    File(File),
+}
 
-impl Write for Limited {
+impl Write for Sink {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.0.len() + bytes.len() > MAX_BODY {
-            return Err(io::ErrorKind::FileTooLarge.into());
+        match self {
+            Self::Memory(memory) => {
+                if memory.len() + bytes.len() > MAX_BODY {
+                    return Err(io::ErrorKind::FileTooLarge.into());
+                }
+                memory.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            Self::File(file) => file.write(bytes),
         }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -320,14 +473,14 @@ impl Write for Limited {
 }
 
 enum Decoder {
-    Identity(Limited),
-    Gzip(Box<GzDecoder<Limited>>),
-    Deflate(Box<ZlibDecoder<Limited>>),
-    Brotli(Box<DecompressorWriter<Limited>>),
+    Identity(Sink),
+    Gzip(Box<GzDecoder<Sink>>),
+    Deflate(Box<ZlibDecoder<Sink>>),
+    Brotli(Box<DecompressorWriter<Sink>>),
 }
 
 impl Decoder {
-    fn for_headers(headers: &HeaderMap) -> Result<Self, FetchError> {
+    fn for_headers(headers: &HeaderMap, output: Sink) -> Result<Self, FetchError> {
         let mut codings = headers
             .get_all(CONTENT_ENCODING)
             .iter()
@@ -335,12 +488,11 @@ impl Decoder {
             .map(|coding| coding.trim_ascii())
             .filter(|coding| !coding.is_empty() && !coding.eq_ignore_ascii_case(b"identity"));
         let Some(coding) = codings.next() else {
-            return Ok(Self::Identity(Limited(Vec::new())));
+            return Ok(Self::Identity(output));
         };
         if codings.next().is_some() {
             return Err(FetchError::BadEncoding);
         }
-        let output = Limited(Vec::new());
         match coding.to_ascii_lowercase().as_slice() {
             b"gzip" | b"x-gzip" => Ok(Self::Gzip(Box::new(GzDecoder::new(output)))),
             b"deflate" => Ok(Self::Deflate(Box::new(ZlibDecoder::new(output)))),
@@ -361,16 +513,15 @@ impl Decoder {
         }
     }
 
-    fn finish(self) -> io::Result<Vec<u8>> {
+    fn finish(self) -> io::Result<Sink> {
         match self {
-            Self::Identity(output) => Ok(output.0),
-            Self::Gzip(decoder) => decoder.finish().map(|output| output.0),
-            Self::Deflate(decoder) => decoder.finish().map(|output| output.0),
+            Self::Identity(output) => Ok(output),
+            Self::Gzip(decoder) => decoder.finish(),
+            Self::Deflate(decoder) => decoder.finish(),
             Self::Brotli(mut decoder) => {
                 decoder.close()?;
                 decoder
                     .into_inner()
-                    .map(|output| output.0)
                     .map_err(|_| io::ErrorKind::InvalidData.into())
             }
         }

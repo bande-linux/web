@@ -111,3 +111,7 @@ pub fn hsts_preload(data: &[u8]) {
     let _ = crate::hsts::preloaded(table, &name);
     let _ = crate::hsts::preloaded(table, "example.org");
 }
+
+pub fn content_disposition(data: &[u8]) {
+    let _ = crate::Disposition::parse(data);
+}

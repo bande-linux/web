@@ -25,7 +25,7 @@ use rustix::event::{EventfdFlags, eventfd};
 pub use url::Url;
 
 pub use fetch::MAX_BODY;
-pub use mime::ContentType;
+pub use mime::{ContentType, Disposition, is_viewable};
 pub use site::Site;
 pub use storage::Storage;
 
@@ -39,6 +39,7 @@ pub struct Request {
     pub url: Url,
     pub top_level: Option<Url>,
     pub initiator: Option<Url>,
+    pub offers_saving: bool,
 }
 
 impl Request {
@@ -47,6 +48,14 @@ impl Request {
             url,
             top_level: None,
             initiator,
+            offers_saving: false,
+        }
+    }
+
+    pub fn offering_saving(self) -> Self {
+        Self {
+            offers_saving: true,
+            ..self
         }
     }
 
@@ -55,6 +64,7 @@ impl Request {
             url,
             top_level: Some(document.clone()),
             initiator: Some(document.clone()),
+            offers_saving: false,
         }
     }
 }
@@ -89,6 +99,7 @@ pub enum FetchError {
     TooLarge,
     BadEncoding,
     TimedOut,
+    Save(io::Error),
 }
 
 impl fmt::Display for FetchError {
@@ -108,6 +119,7 @@ impl fmt::Display for FetchError {
             Self::TooLarge => formatter.write_str("the response is too large"),
             Self::BadEncoding => formatter.write_str("the response's content encoding is invalid"),
             Self::TimedOut => formatter.write_str("the server took too long to respond"),
+            Self::Save(error) => write!(formatter, "cannot save the file: {error}"),
         }
     }
 }
@@ -115,6 +127,20 @@ impl fmt::Display for FetchError {
 impl std::error::Error for FetchError {}
 
 pub type Completion = (FetchId, Result<Response, FetchError>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offer {
+    pub url: Url,
+    pub content_type: Option<String>,
+    pub name: Option<String>,
+    pub length: Option<u64>,
+}
+
+#[derive(Debug)]
+pub enum Transfer {
+    Offered(FetchId, Offer),
+    Progress(FetchId, u64),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clear {
@@ -136,6 +162,7 @@ pub struct Fetcher {
     signal: Arc<OwnedFd>,
     ready: Arc<OwnedFd>,
     completions: Receiver<Completion>,
+    transfers: Receiver<Transfer>,
     next_id: u64,
     thread: Option<JoinHandle<()>>,
 }
@@ -152,10 +179,12 @@ impl Fetcher {
         let tls = executor::tls_config()?;
         let (commands, received) = mpsc::channel();
         let (completed, completions) = mpsc::channel();
+        let (transferred, transfers) = mpsc::channel();
         let thread = executor::spawn(
             received,
             Arc::clone(&signal),
             completed,
+            transferred,
             Arc::clone(&ready),
             tls,
             storage,
@@ -165,6 +194,7 @@ impl Fetcher {
             signal,
             ready,
             completions,
+            transfers,
             next_id: 0,
             thread: Some(thread),
         })
@@ -189,6 +219,14 @@ impl Fetcher {
         let (reply, answer) = mpsc::channel();
         self.send(Command::SiteData(reply));
         answer.recv().unwrap_or_default()
+    }
+
+    pub fn save(&mut self, id: FetchId, file: std::fs::File) {
+        self.send(Command::Save(id, file));
+    }
+
+    pub fn transfers(&mut self) -> Vec<Transfer> {
+        self.transfers.try_iter().collect()
     }
 
     pub fn cancel(&mut self, id: FetchId) {

@@ -11,13 +11,17 @@ use rustix::event::{EventfdFlags, eventfd};
 use rustix::time::{TimerfdClockId, TimerfdFlags, timerfd_create};
 pub use web_ipc::{Destination, Program, Size as Viewport, Url, Verdict};
 pub use web_net::{Clear, SiteData};
-use web_paint::{DisplayList, Rect};
+use web_paint::DisplayList;
+pub use web_paint::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ViewId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoadId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DownloadId(pub u64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Session {
@@ -74,6 +78,23 @@ pub enum Command {
         view: ViewId,
         session: Session,
     },
+    Find {
+        view: ViewId,
+        load: LoadId,
+        query: String,
+    },
+    Reader {
+        view: ViewId,
+        load: LoadId,
+        style: String,
+    },
+    Save {
+        download: DownloadId,
+        file: OwnedFd,
+    },
+    CancelDownload {
+        download: DownloadId,
+    },
     Quit,
 }
 
@@ -100,6 +121,15 @@ pub struct Frame {
     pub list: Arc<DisplayList>,
     pub links: Arc<Links>,
     pub fragment: Option<f32>,
+    pub readable: bool,
+}
+
+pub struct Offer {
+    pub download: DownloadId,
+    pub url: Url,
+    pub kind: Option<String>,
+    pub name: Option<String>,
+    pub length: Option<u64>,
 }
 
 pub struct PausedRequest {
@@ -112,13 +142,31 @@ pub enum Outcome {
     Frame(Frame),
     Relaid(Arc<DisplayList>, Arc<Links>, Option<Rect>),
     Scroll(f32),
-    Failed { url: Url, message: String },
-    Unsupported { url: Url, kind: String },
-    Crashed { url: Url },
+    Failed {
+        url: Url,
+        message: String,
+    },
+    Unsupported {
+        url: Url,
+        kind: String,
+    },
+    Crashed {
+        url: Url,
+    },
     Unresponsive,
     Responsive,
     Paused(PausedRequest),
     SiteData(Vec<SiteData>),
+    Found(Vec<Vec<Rect>>),
+    Offered(Offer),
+    Progress {
+        download: DownloadId,
+        received: u64,
+    },
+    Saved {
+        download: DownloadId,
+        error: Option<String>,
+    },
 }
 
 pub struct Update {

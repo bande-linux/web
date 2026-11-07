@@ -17,7 +17,7 @@ use rustls_platform_verifier::BuilderVerifierExt;
 use crate::fetch::{Network, fetch};
 use crate::reactor::Reactor;
 use crate::storage::{State, Storage};
-use crate::{Clear, Completion, FetchError, FetchId, Request, Response, SiteData};
+use crate::{Clear, Completion, FetchError, FetchId, Request, Response, SiteData, Transfer};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 const ALPN_HTTP1: &[u8] = b"http/1.1";
@@ -25,6 +25,7 @@ const ALPN_HTTP1: &[u8] = b"http/1.1";
 pub(crate) enum Command {
     Fetch(FetchId, Box<Request>),
     Cancel(FetchId),
+    Save(FetchId, std::fs::File),
     Clear(Clear),
     SiteData(Sender<Vec<SiteData>>),
     Quit,
@@ -81,6 +82,7 @@ pub(crate) fn spawn(
     commands: Receiver<Command>,
     signal: Arc<OwnedFd>,
     completed: Sender<Completion>,
+    transfers: Sender<Transfer>,
     ready: Arc<OwnedFd>,
     tls: Arc<ClientConfig>,
     storage: Storage,
@@ -98,7 +100,7 @@ pub(crate) fn spawn(
                     signal,
                 }),
             };
-            if let Err(error) = executor.run(tls, &storage) {
+            if let Err(error) = executor.run(tls, &storage, transfers) {
                 executor.fail_all(&error);
             }
         })
@@ -113,13 +115,22 @@ struct Executor {
 }
 
 impl Executor {
-    fn run(&mut self, tls: Arc<ClientConfig>, storage: &Storage) -> io::Result<()> {
+    fn run(
+        &mut self,
+        tls: Arc<ClientConfig>,
+        storage: &Storage,
+        transfers: Sender<Transfer>,
+    ) -> io::Result<()> {
         let reactor = Reactor::new(self.woken.signal.as_fd())?;
         let state = RefCell::new(State::open(storage));
         let network = Rc::new(Network {
             reactor,
             tls,
             state,
+            transfers,
+            ready: Arc::clone(&self.ready),
+            saves: RefCell::default(),
+            active: RefCell::default(),
         });
         loop {
             clear(&self.woken.signal);
@@ -128,6 +139,11 @@ impl Executor {
             }
             self.poll_woken();
             let now = Instant::now();
+            for id in network.active.borrow_mut().drain() {
+                if let Some((_, deadline)) = self.tasks.get_mut(&id) {
+                    *deadline = now + FETCH_TIMEOUT;
+                }
+            }
             let expired: Vec<FetchId> = self
                 .tasks
                 .iter()
@@ -151,13 +167,18 @@ impl Executor {
         loop {
             match self.commands.try_recv() {
                 Ok(Command::Fetch(id, request)) => {
-                    let task: Task = Box::pin(fetch(Rc::clone(network), *request));
+                    let task: Task = Box::pin(fetch(Rc::clone(network), id, *request));
                     self.tasks
                         .insert(id, (task, Instant::now() + FETCH_TIMEOUT));
                     self.lock_woken().push(id);
                 }
                 Ok(Command::Cancel(id)) => {
                     self.tasks.remove(&id);
+                    network.saves.borrow_mut().remove(&id);
+                }
+                Ok(Command::Save(id, file)) => {
+                    network.saves.borrow_mut().insert(id, file);
+                    self.lock_woken().push(id);
                 }
                 Ok(Command::Clear(clear)) => network.state.borrow_mut().clear(&clear),
                 Ok(Command::SiteData(reply)) => {

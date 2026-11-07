@@ -6,6 +6,6 @@ pub use woff::decode as decode_font;
 
 pub use fonts::{FontId, FontKey, FontMetrics, Fonts};
 pub use paragraph::{
-    AtomicSize, Glyph, Line, LineAlign, LineItem, Lines, Paragraph, RunStyle, ShapedParagraph,
-    content_metrics, inline_extent,
+    AtomicSize, Glyph, Line, LineAlign, LineItem, Lines, NO_TEXT, Paragraph, RunStyle,
+    ShapedParagraph, content_metrics, inline_extent,
 };

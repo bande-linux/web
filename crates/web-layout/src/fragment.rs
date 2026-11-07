@@ -112,6 +112,8 @@ pub enum Fragment {
 pub struct FragmentTree {
     pub root: BoxFragment,
     pub glyphs: Vec<Glyph>,
+    pub text: String,
+    pub clusters: Vec<u32>,
 }
 
 impl FragmentTree {
