@@ -103,8 +103,15 @@ cp "$repo"/search/2c4b8834-030c-4097-a887-c7506689095c* services/settings/dumps/
 xargs rm -rf < "$repo/platform/remove.list"
 cp -a "$repo/platform/overlay/." .
 
+find browser/locales/en-US toolkit/locales/en-US dom/locales/en-US -type f \( -name '*.ftl' -o -name '*.properties' -o -name '*.dtd' \) \
+    -exec sed -i -E '/^\s*(#|<!--)/! s/\bFirefox\b/Browser/g' {} +
 cat "$repo/theme/bande.css" >> browser/themes/linux/browser.css
 python3 "$repo/scripts/fetch-tracking-lists.py" .
+
+find browser toolkit -type f \( -iname '*fox*.svg' -o -name 'kit-*.svg' -o -name 'kit.svg' \) -not -path '*/test*' \
+    -exec sh -c 'echo "$0" > "$1"' "$blank" {} \;
+cp "$svg" browser/themes/shared/sidebar/firefox.svg
+cp "$svg" browser/themes/shared/icons/window-firefox.svg
 
 debian/rules debian/control
 grep -q '^Source: bande-browser$' debian/control
