@@ -33,6 +33,7 @@ EXPORTS.mozilla.widget += [
     "DMABufSurface.h",
     "GSettings.h",
     "GtkCompositorWidget.h",
+    "mozwayland.h",
     "InProcessGtkCompositorWidget.h",
     "nsWaylandDisplay.h",
     "va_drmcommon.h",
