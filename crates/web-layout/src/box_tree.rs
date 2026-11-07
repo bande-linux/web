@@ -4,15 +4,16 @@ use crate::collapse::{Collapsed, collapse};
 use web_atoms::Atom;
 use web_dom::{Document, NodeId, NodeKind};
 use web_style::{
-    ComputedStyle, ContentPart, Display, LineHeight, ListStyleType, Pseudo, ResetStyle, Styles,
-    TableColumn, VerticalAlign,
+    ComputedStyle, ContentPart, Display, LineHeight, ListStyleType, Pseudo, ResetStyle, Styles, TableColumn, TextTransform, VerticalAlign,
 };
 use web_text::{
-    FontKey, Fonts, LineAlign, Paragraph, RunStyle, ShapedParagraph, content_metrics, inline_extent,
+    FontKey, Fonts, LineAlign, Paragraph, RunStyle, ShapedParagraph, content_metrics, first_letter,
+    inline_extent,
 };
 
 pub(crate) struct BlockBox {
     pub(crate) node: Option<NodeId>,
+    pub(crate) pseudo: Option<Pseudo>,
     pub(crate) style: ComputedStyle,
     pub(crate) contents: Contents,
     pub(crate) marker: Option<Box<InlineContent>>,
@@ -30,6 +31,7 @@ pub(crate) enum Contents {
 pub(crate) struct Table {
     pub(crate) captions: Vec<BlockBox>,
     pub(crate) rows: Vec<TableRow>,
+    pub(crate) parts: Parts,
     pub(crate) collapsed: Option<Box<Collapsed>>,
 }
 
@@ -59,10 +61,13 @@ pub(crate) enum ItemKind {
     Start,
     End(u32),
     Atomic(u16),
+    Resume,
+    Anchor(u16),
 }
 
 pub(crate) struct InlineItem {
     pub(crate) node: NodeId,
+    pub(crate) pseudo: Option<Pseudo>,
     pub(crate) style: ComputedStyle,
     pub(crate) parent: Option<u32>,
     pub(crate) kind: ItemKind,
@@ -115,6 +120,7 @@ fn decorated(style: &ComputedStyle) -> bool {
         || frame.end() != 0.0
         || reset.border.top != 0.0
         || reset.border.bottom != 0.0
+        || style.is_positioned()
 }
 
 pub(crate) struct InlineContent {
@@ -137,6 +143,26 @@ struct Builder<'a> {
     fonts: &'a mut Fonts,
     depth: u32,
     counters: Vec<Counter>,
+    quote_depth: i32,
+    first_letter: Option<(NodeId, ComputedStyle)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Origin {
+    node: NodeId,
+    pseudo: Option<Pseudo>,
+}
+
+impl Origin {
+    fn element(node: NodeId) -> Self {
+        Origin { node, pseudo: None }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Item {
+    Node(NodeId),
+    Generated(NodeId, Pseudo),
 }
 
 struct Pending {
@@ -158,10 +184,11 @@ impl Pending {
         }
     }
 
-    fn push(&mut self, node: NodeId, style: &ComputedStyle, kind: ItemKind) -> u32 {
+    fn push(&mut self, origin: Origin, style: &ComputedStyle, kind: ItemKind) -> u32 {
         let tag = self.items.len() as u32;
         self.items.push(InlineItem {
-            node,
+            node: origin.node,
+            pseudo: origin.pseudo,
             style: style.clone(),
             parent: self.open.last().copied(),
             kind,
@@ -178,13 +205,15 @@ impl BoxTree {
             fonts,
             depth: 0,
             counters: Vec::new(),
+            quote_depth: 0,
+            first_letter: None,
         };
         let root = document
             .children(NodeId::DOCUMENT)
             .find(|&child| document.kind(child) == Some(NodeKind::Element))
             .and_then(|root| {
                 let style = styles.get(root)?.clone();
-                Some(builder.block(root, style, None))
+                Some(builder.block(Origin::element(root), style, None))
             });
         BoxTree { root }
     }
@@ -214,9 +243,13 @@ fn keep_collapsed(style: &mut ComputedStyle, old: &ResetStyle) {
 
 fn refresh(block: &mut BlockBox, styles: &Styles, parent: Option<&ComputedStyle>) {
     let old = block.style.reset.clone();
-    match (block.node.and_then(|node| styles.get(node)), parent) {
+    let own = block.node.and_then(|node| match block.pseudo {
+        Some(pseudo) => styles.pseudo(node, pseudo),
+        None => styles.get(node),
+    });
+    match (own, parent) {
         (Some(style), _) => block.style = style.clone(),
-        (None, Some(parent)) => block.style = styles.anonymous(parent),
+        (None, Some(parent)) => block.style = styles.anonymous_box(parent, old.display),
         (None, None) => {}
     }
     if let Contents::Table(table) = &block.contents
@@ -238,7 +271,11 @@ fn refresh(block: &mut BlockBox, styles: &Styles, parent: Option<&ComputedStyle>
         }
         Contents::Inline(inline) => {
             for item in &mut inline.items {
-                if let Some(style) = styles.get(item.node) {
+                let own = match item.pseudo {
+                    Some(pseudo) => styles.pseudo(item.node, pseudo),
+                    None => styles.get(item.node),
+                };
+                if let Some(style) = own {
                     item.style = style.clone();
                 }
             }
@@ -421,56 +458,101 @@ pub(crate) fn run_style(
         align: LineAlign::BASELINE,
         white_space: inherited.white_space,
         tag,
+        letter_spacing: inherited.letter_spacing,
+        word_spacing: inherited.word_spacing,
+        tab_columns: match inherited.tab_size {
+            web_style::TabSize::Spaces(spaces) => spaces.round() as u32,
+            web_style::TabSize::Px(px) => (px / (size * 0.5).max(1.0)).round() as u32,
+        },
+        word_break: inherited.word_break,
+        overflow_wrap: inherited.overflow_wrap,
     }
 }
 
 impl Builder<'_> {
-    fn block(&mut self, node: NodeId, style: ComputedStyle, ordinal: Option<i32>) -> BlockBox {
-        if self.document.html_element_name(node) == Some(Atom::IMG) {
+    fn block(&mut self, origin: Origin, style: ComputedStyle, ordinal: Option<i32>) -> BlockBox {
+        let node = origin.node;
+        if origin.pseudo.is_none() && self.document.html_element_name(node) == Some(Atom::IMG) {
             let source = self.document.attribute(node, Atom::SRC).map(Arc::from);
             return BlockBox {
                 node: Some(node),
+                pseudo: None,
                 style,
                 contents: Contents::Replaced(source),
                 marker: None,
             };
         }
         if matches!(style.display(), Display::Table | Display::InlineTable) {
-            let mut style = style;
-            let mut parts = Parts::default();
-            let mut table = self.table(node, &style, &mut parts);
-            if style.inherited.border_collapse {
-                let outer = collapse(&mut table, &style, &parts);
-                let reset = Arc::make_mut(&mut style.reset);
-                reset.border = outer;
-                reset.border_color = web_style::Sides::all(web_style::Color::TRANSPARENT);
-                reset.padding = web_style::Sides::all(web_style::LengthPercentage::ZERO);
-            }
-            return BlockBox {
-                node: Some(node),
-                style,
-                contents: Contents::Table(Box::new(table)),
-                marker: None,
-            };
+            let outer_letter = self.first_letter.take();
+            let items = self.items_of(origin);
+            let block = self.table_box(Some(origin), style, items);
+            self.first_letter = outer_letter;
+            return block;
         }
+        let items = origin.pseudo.map(|_| Vec::new());
+        self.container(Some(origin), style, items, ordinal)
+    }
+
+    fn container(
+        &mut self,
+        origin: Option<Origin>,
+        style: ComputedStyle,
+        items: Option<Vec<Item>>,
+        ordinal: Option<i32>,
+    ) -> BlockBox {
         let mut blocks = Vec::new();
         let mut pending = Pending::new(is_rtl(&style));
         pending
             .paragraph
             .set_nowrap(!style.inherited.white_space.wraps());
+        let holder = origin.unwrap_or(Origin {
+            node: NodeId::DOCUMENT,
+            pseudo: None,
+        });
         let inside = style.inherited.list_inside;
         if inside
             && let Some(text) =
                 ordinal.and_then(|ordinal| marker_text(style.inherited.list_style_type, ordinal))
         {
-            let tag = pending.push(node, &style, ItemKind::Text);
+            let tag = pending.push(holder, &style, ItemKind::Text);
             let mut run = run_style(self.fonts, &style, tag, 0.0);
             run.white_space = web_style::WhiteSpace::Pre;
             pending.paragraph.push_text(&format!("{text} "), run);
         }
-        self.children(node, &mut blocks, &mut pending, Shift::default());
         let flex = matches!(style.display(), Display::Flex | Display::InlineFlex);
         let grid = matches!(style.display(), Display::Grid | Display::InlineGrid);
+        let outer_letter = self.first_letter.take();
+        let own_letter = origin
+            .filter(|origin| origin.pseudo.is_none() && !flex && !grid)
+            .and_then(|origin| {
+                let style = self.styles.pseudo(origin.node, Pseudo::FirstLetter)?;
+                Some((origin.node, style.clone()))
+            });
+        if !flex && !grid {
+            self.first_letter = own_letter.or(outer_letter.clone());
+        }
+        match (origin, items) {
+            (Some(origin), None) => {
+                self.children(origin.node, &mut blocks, &mut pending, Shift::default())
+            }
+            (Some(origin), Some(_)) if origin.pseudo.is_some() => {
+                self.generated_parts(origin, &style, &mut pending, Shift::default())
+            }
+            (origin, Some(items)) => self.run(
+                origin.map_or(NodeId::DOCUMENT, |origin| origin.node),
+                &style,
+                items.into_iter(),
+                &mut blocks,
+                &mut pending,
+                Shift::default(),
+            ),
+            (None, None) => {}
+        }
+        self.first_letter = if !flex && !grid && self.first_letter.is_some() {
+            outer_letter
+        } else {
+            None
+        };
         let contents = if flex {
             self.flush(&mut blocks, pending, &style);
             Contents::Flex(blocks)
@@ -502,10 +584,49 @@ impl Builder<'_> {
             .filter(|_| !inside)
             .and_then(|ordinal| self.marker(&style, ordinal));
         BlockBox {
-            node: Some(node),
+            node: origin.map(|origin| origin.node),
+            pseudo: origin.and_then(|origin| origin.pseudo),
             style,
             contents,
             marker,
+        }
+    }
+
+    fn items_of(&self, origin: Origin) -> Vec<Item> {
+        if origin.pseudo.is_some() {
+            return Vec::new();
+        }
+        let node = origin.node;
+        let mut items = Vec::new();
+        if self.styles.pseudo(node, Pseudo::Before).is_some() {
+            items.push(Item::Generated(node, Pseudo::Before));
+        }
+        items.extend(self.document.children(node).map(Item::Node));
+        if self.styles.pseudo(node, Pseudo::After).is_some() {
+            items.push(Item::Generated(node, Pseudo::After));
+        }
+        items
+    }
+
+    fn item_style(&self, item: Item) -> Option<&ComputedStyle> {
+        match item {
+            Item::Node(node) => self.styles.get(node),
+            Item::Generated(node, pseudo) => self.styles.pseudo(node, pseudo),
+        }
+    }
+
+    fn is_blank_text(&self, item: Item) -> bool {
+        match item {
+            Item::Node(node) => {
+                self.document.kind(node) == Some(NodeKind::Text)
+                    && self
+                        .document
+                        .text(node)
+                        .unwrap_or_default()
+                        .chars()
+                        .all(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'))
+            }
+            Item::Generated(..) => false,
         }
     }
 
@@ -516,124 +637,387 @@ impl Builder<'_> {
         pending: &mut Pending,
         shift: Shift,
     ) {
+        let Some(parent) = self.styles.get(node).cloned() else {
+            return;
+        };
+        let document = self.document;
+        let before = self
+            .styles
+            .pseudo(node, Pseudo::Before)
+            .map(|_| Item::Generated(node, Pseudo::Before));
+        let after = self
+            .styles
+            .pseudo(node, Pseudo::After)
+            .map(|_| Item::Generated(node, Pseudo::After));
+        let items = before
+            .into_iter()
+            .chain(document.children(node).map(Item::Node))
+            .chain(after);
+        self.run(node, &parent, items, blocks, pending, shift);
+    }
+
+    fn run(
+        &mut self,
+        node: NodeId,
+        parent: &ComputedStyle,
+        items: impl Iterator<Item = Item>,
+        blocks: &mut Vec<BlockBox>,
+        pending: &mut Pending,
+        shift: Shift,
+    ) {
         let scope = self.counters.len();
-        let parent = self.styles.get(node).cloned();
-        self.generated(node, Pseudo::Before, pending, shift);
-        for child in self.document.children(node) {
-            let Some(style) = self.styles.get(child) else {
+        let mut items = items.peekable();
+        while let Some(item) = items.next() {
+            let Some(style) = self.item_style(item).cloned() else {
                 continue;
             };
-            let ordinal = (self.document.kind(child) == Some(NodeKind::Element)
-                && style.display() != Display::None)
-                .then(|| self.apply_counters(child, style))
-                .flatten();
-            match self.document.kind(child) {
-                Some(NodeKind::Text) => {
-                    let text = self.document.text(child).unwrap_or_default();
-                    let tag = pending.push(child, style, ItemKind::Text);
+            if style.display().is_table_part() {
+                let mut run = vec![item];
+                let mut trailing = Vec::new();
+                while let Some(&next) = items.peek() {
+                    let proper = self
+                        .item_style(next)
+                        .is_some_and(|style| style.display().is_table_part());
+                    if proper {
+                        run.append(&mut trailing);
+                        run.push(next);
+                    } else if self.is_blank_text(next)
+                        || self
+                            .item_style(next)
+                            .is_some_and(|style| style.display() == Display::None)
+                    {
+                        trailing.push(next);
+                    } else {
+                        break;
+                    }
+                    items.next();
+                }
+                self.anonymous_table(node, parent, run, blocks, pending);
+                for skipped in trailing {
+                    if self.is_blank_text(skipped) {
+                        self.item(parent, skipped, blocks, pending, shift);
+                    }
+                }
+                continue;
+            }
+            self.item(parent, item, blocks, pending, shift);
+        }
+        self.counters.truncate(scope);
+    }
+
+    fn anonymous_table(
+        &mut self,
+        node: NodeId,
+        parent: &ComputedStyle,
+        items: Vec<Item>,
+        blocks: &mut Vec<BlockBox>,
+        pending: &mut Pending,
+    ) {
+        let inline = parent.display() == Display::Inline;
+        let display = if inline {
+            Display::InlineTable
+        } else {
+            Display::Table
+        };
+        let style = self.styles.anonymous_box(parent, display);
+        let block = self.table_box(None, style.clone(), items);
+        if inline {
+            let index = u16::try_from(pending.atomics.len()).unwrap_or(u16::MAX);
+            if index < u16::MAX {
+                pending.atomics.push(block);
+                let origin = Origin::element(node);
+                let tag = pending.push(origin, &style, ItemKind::Atomic(index));
+                pending
+                    .paragraph
+                    .push_atomic(index, run_style(self.fonts, &style, tag, 0.0));
+                self.first_letter = None;
+            }
+        } else {
+            let taken = std::mem::replace(pending, Pending::new(pending.paragraph.is_rtl()));
+            self.flush(blocks, taken, parent);
+            blocks.push(block);
+            self.first_letter = None;
+        }
+    }
+
+    fn item(
+        &mut self,
+        parent: &ComputedStyle,
+        item: Item,
+        blocks: &mut Vec<BlockBox>,
+        pending: &mut Pending,
+        shift: Shift,
+    ) {
+        let Some(style) = self.item_style(item).cloned() else {
+            return;
+        };
+        let origin = match item {
+            Item::Node(child) => Origin::element(child),
+            Item::Generated(owner, pseudo) => Origin {
+                node: owner,
+                pseudo: Some(pseudo),
+            },
+        };
+        let kind = match item {
+            Item::Node(child) => self.document.kind(child),
+            Item::Generated(..) => Some(NodeKind::Element),
+        };
+        match kind {
+            Some(NodeKind::Text) => {
+                let text = self.document.text(origin.node).unwrap_or_default();
+                self.push_text(origin, text, &style, pending, shift);
+            }
+            Some(NodeKind::Element) => {
+                let ordinal = (style.display() != Display::None)
+                    .then(|| self.apply_counters(origin, &style))
+                    .flatten();
+                if self.depth < MAX_DEPTH && style.display() != Display::None {
+                    self.element(parent, origin, style, ordinal, blocks, pending, shift);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn element(
+        &mut self,
+        parent: &ComputedStyle,
+        origin: Origin,
+        style: ComputedStyle,
+        ordinal: Option<i32>,
+        blocks: &mut Vec<BlockBox>,
+        pending: &mut Pending,
+        shift: Shift,
+    ) {
+        let image = origin.pseudo.is_none()
+            && self.document.html_element_name(origin.node) == Some(Atom::IMG);
+        if style.is_out_of_flow() || style.reset.float != web_style::Float::None {
+            self.depth += 1;
+            let outer_letter = self.first_letter.take();
+            let block = self.block(origin, style.clone(), None);
+            self.first_letter = outer_letter;
+            self.depth -= 1;
+            let index = u16::try_from(pending.out_of_flow.len()).unwrap_or(u16::MAX);
+            if index < u16::MAX {
+                pending.out_of_flow.push(block);
+                let tag = pending.push(origin, &style, ItemKind::Anchor(index));
+                let run = run_style(self.fonts, parent, tag, 0.0);
+                pending.paragraph.push_anchor(index, run);
+            }
+            return;
+        }
+        if (style.display().is_inline_level() && style.display() != Display::Inline)
+            || (style.display() == Display::Inline && image)
+        {
+            self.depth += 1;
+            self.first_letter = None;
+            let block = self.block(origin, style.clone(), None);
+            self.first_letter = None;
+            self.depth -= 1;
+            let index = u16::try_from(pending.atomics.len()).unwrap_or(u16::MAX);
+            if index < u16::MAX {
+                pending.atomics.push(block);
+                let tag = pending.push(origin, &style, ItemKind::Atomic(index));
+                let own = resolve_shift(
+                    self.fonts,
+                    parent,
+                    &style,
+                    shift,
+                    true,
+                    origin.node.index(),
+                );
+                pending
+                    .paragraph
+                    .push_atomic(index, shifted(self.fonts, &style, tag, own));
+            }
+            return;
+        }
+        match style.display() {
+            Display::None => {}
+            Display::Inline | Display::Contents => {
+                let inner = resolve_shift(
+                    self.fonts,
+                    parent,
+                    &style,
+                    shift,
+                    false,
+                    origin.node.index(),
+                );
+                if origin.pseudo.is_none()
+                    && self.document.html_element_name(origin.node) == Some(Atom::BR)
+                {
+                    let tag = pending.push(origin, &style, ItemKind::Text);
                     pending
                         .paragraph
-                        .push_text(text, shifted(self.fonts, style, tag, shift));
-                }
-                Some(NodeKind::Element) if self.depth >= MAX_DEPTH => {}
-                Some(NodeKind::Element) if style.display() == Display::None => {}
-                Some(NodeKind::Element)
-                    if style.is_out_of_flow() || style.reset.float != web_style::Float::None =>
-                {
+                        .push_break(shifted(self.fonts, &style, tag, shift));
+                } else if style.display() == Display::Inline && decorated(&style) {
+                    let frame = InlineFrame::of(&style);
+                    let start = pending.push(origin, &style, ItemKind::Start);
+                    pending.paragraph.push_spacer(
+                        frame.start(),
+                        shifted(self.fonts, &style, start, inner),
+                    );
+                    pending.open.push(start);
                     self.depth += 1;
-                    let block = self.block(child, style.clone(), None);
+                    self.inline_contents(origin, &style, blocks, pending, inner);
                     self.depth -= 1;
-                    pending.out_of_flow.push(block);
-                }
-                Some(NodeKind::Element)
-                    if style.display().is_inline_level() && style.display() != Display::Inline
-                        || (style.display() == Display::Inline
-                            && self.document.html_element_name(child) == Some(Atom::IMG)) =>
-                {
-                    self.depth += 1;
-                    let block = self.block(child, style.clone(), None);
-                    self.depth -= 1;
-                    let index = u16::try_from(pending.atomics.len()).unwrap_or(u16::MAX);
-                    if index < u16::MAX {
-                        pending.atomics.push(block);
-                        let tag = pending.push(child, style, ItemKind::Atomic(index));
-                        let own = resolve_shift(
-                            self.fonts,
-                            parent.as_ref().unwrap_or(style),
-                            style,
-                            shift,
-                            true,
-                            child.index(),
-                        );
+                    if let Some(open) = pending.open.pop() {
+                        let end = pending.push(origin, &style, ItemKind::End(open));
                         pending
                             .paragraph
-                            .push_atomic(index, shifted(self.fonts, style, tag, own));
+                            .push_spacer(frame.end(), shifted(self.fonts, &style, end, inner));
                     }
+                } else {
+                    self.depth += 1;
+                    self.inline_contents(origin, &style, blocks, pending, inner);
+                    self.depth -= 1;
                 }
-                Some(NodeKind::Element) => match style.display() {
-                    Display::None => {}
-                    Display::Inline | Display::Contents => {
-                        let inner = resolve_shift(
-                            self.fonts,
-                            parent.as_ref().unwrap_or(style),
-                            style,
-                            shift,
-                            false,
-                            child.index(),
-                        );
-                        if self.document.html_element_name(child) == Some(Atom::BR) {
-                            let tag = pending.push(child, style, ItemKind::Text);
-                            pending
-                                .paragraph
-                                .push_break(shifted(self.fonts, style, tag, shift));
-                        } else if style.display() == Display::Inline && decorated(style) {
-                            let frame = InlineFrame::of(style);
-                            let start = pending.push(child, style, ItemKind::Start);
-                            pending.paragraph.push_spacer(
-                                frame.start(),
-                                shifted(self.fonts, style, start, inner),
-                            );
-                            pending.open.push(start);
-                            self.depth += 1;
-                            self.children(child, blocks, pending, inner);
-                            self.depth -= 1;
-                            let same = pending.items.get(start as usize).is_some_and(|item| {
-                                item.node == child && item.kind == ItemKind::Start
-                            });
-                            if same {
-                                pending.open.pop();
-                                let end = pending.push(child, style, ItemKind::End(start));
-                                pending.paragraph.push_spacer(
-                                    frame.end(),
-                                    shifted(self.fonts, style, end, inner),
-                                );
-                            }
-                        } else {
-                            self.depth += 1;
-                            self.children(child, blocks, pending, inner);
-                            self.depth -= 1;
-                        }
-                    }
-                    display => {
-                        let parent_style = self.styles.get(node).cloned();
-                        if let Some(parent_style) = parent_style {
-                            let taken = std::mem::replace(
-                                pending,
-                                Pending::new(pending.paragraph.is_rtl()),
-                            );
-                            self.flush(blocks, taken, &parent_style);
-                        }
-                        let item_ordinal = ordinal.filter(|_| display == Display::ListItem);
-                        self.depth += 1;
-                        blocks.push(self.block(child, style.clone(), item_ordinal));
-                        self.depth -= 1;
-                    }
-                },
-                _ => {}
+            }
+            display => {
+                let rtl = pending.paragraph.is_rtl();
+                let open: Vec<(Origin, ComputedStyle)> = pending
+                    .open
+                    .iter()
+                    .filter_map(|&tag| {
+                        let item = pending.items.get(tag as usize)?;
+                        Some((
+                            Origin {
+                                node: item.node,
+                                pseudo: item.pseudo,
+                            },
+                            item.style.clone(),
+                        ))
+                    })
+                    .collect();
+                let taken = std::mem::replace(pending, Pending::new(rtl));
+                self.flush(blocks, taken, parent);
+                for (origin, style) in open {
+                    let tag = pending.push(origin, &style, ItemKind::Resume);
+                    pending.open.push(tag);
+                }
+                let item_ordinal = ordinal.filter(|_| display == Display::ListItem);
+                self.depth += 1;
+                blocks.push(self.block(origin, style, item_ordinal));
+                self.depth -= 1;
             }
         }
-        self.generated(node, Pseudo::After, pending, shift);
-        self.counters.truncate(scope);
+    }
+
+    fn inline_contents(
+        &mut self,
+        origin: Origin,
+        style: &ComputedStyle,
+        blocks: &mut Vec<BlockBox>,
+        pending: &mut Pending,
+        shift: Shift,
+    ) {
+        if origin.pseudo.is_some() {
+            self.generated_parts(origin, style, pending, shift);
+        } else {
+            self.children(origin.node, blocks, pending, shift);
+        }
+    }
+
+    fn push_text(
+        &mut self,
+        origin: Origin,
+        text: &str,
+        style: &ComputedStyle,
+        pending: &mut Pending,
+        shift: Shift,
+    ) {
+        let text = transformed(text, style, pending.paragraph.last_char());
+        let collapsible = style.inherited.white_space.collapses_spaces();
+        let blank = text
+            .chars()
+            .all(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\x0c'));
+        if self.first_letter.is_some() && !(blank && collapsible) {
+            let holder = self.first_letter.take();
+            if let (Some((holder, letter_style)), Some(range)) = (holder, first_letter(&text)) {
+                self.push_run(origin, text.get(..range.start), style, pending, shift);
+                let letter = text.get(range.clone()).unwrap_or_default();
+                let letter_origin = Origin {
+                    node: holder,
+                    pseudo: Some(Pseudo::FirstLetter),
+                };
+                self.push_first_letter(letter_origin, letter, letter_style, style, pending, shift);
+                self.push_run(origin, text.get(range.end..), style, pending, shift);
+                return;
+            }
+        }
+        self.push_run(origin, Some(&text), style, pending, shift);
+    }
+
+    fn push_run(
+        &mut self,
+        origin: Origin,
+        text: Option<&str>,
+        style: &ComputedStyle,
+        pending: &mut Pending,
+        shift: Shift,
+    ) {
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
+            return;
+        };
+        let tag = pending.push(origin, style, ItemKind::Text);
+        pending
+            .paragraph
+            .push_text(text, shifted(self.fonts, style, tag, shift));
+    }
+
+    fn push_first_letter(
+        &mut self,
+        letter_origin: Origin,
+        letter: &str,
+        letter_style: ComputedStyle,
+        parent: &ComputedStyle,
+        pending: &mut Pending,
+        shift: Shift,
+    ) {
+        if letter_style.reset.float != web_style::Float::None {
+            let mut paragraph = Pending::new(is_rtl(&letter_style));
+            let tag = paragraph.push(letter_origin, &letter_style, ItemKind::Text);
+            paragraph
+                .paragraph
+                .push_text(letter, run_style(self.fonts, &letter_style, tag, 0.0));
+            let contents = Contents::Inline(Box::new(self.finish(paragraph)));
+            let index = u16::try_from(pending.out_of_flow.len()).unwrap_or(u16::MAX);
+            if index < u16::MAX {
+                pending.out_of_flow.push(BlockBox {
+                    node: Some(letter_origin.node),
+                    pseudo: letter_origin.pseudo,
+                    style: letter_style.clone(),
+                    contents,
+                    marker: None,
+                });
+                let tag = pending.push(letter_origin, &letter_style, ItemKind::Anchor(index));
+                let run = run_style(self.fonts, parent, tag, 0.0);
+                pending.paragraph.push_anchor(index, run);
+            }
+            return;
+        }
+        let inner = resolve_shift(
+            self.fonts,
+            parent,
+            &letter_style,
+            shift,
+            false,
+            letter_origin.node.index(),
+        );
+        let frame = InlineFrame::of(&letter_style);
+        let start = pending.push(letter_origin, &letter_style, ItemKind::Start);
+        pending.paragraph.push_spacer(
+            frame.start(),
+            shifted(self.fonts, &letter_style, start, inner),
+        );
+        pending.open.push(start);
+        self.push_run(letter_origin, Some(letter), &letter_style, pending, inner);
+        pending.open.pop();
+        let end = pending.push(letter_origin, &letter_style, ItemKind::End(start));
+        pending
+            .paragraph
+            .push_spacer(frame.end(), shifted(self.fonts, &letter_style, end, inner));
     }
 
     fn counter(&self, name: &str) -> Option<usize> {
@@ -642,12 +1026,17 @@ impl Builder<'_> {
             .rposition(|counter| &*counter.name == name)
     }
 
-    fn apply_counters(&mut self, element: NodeId, style: &ComputedStyle) -> Option<i32> {
+    fn apply_counters(&mut self, origin: Origin, style: &ComputedStyle) -> Option<i32> {
+        let element = origin.node;
         let changes = style.reset.counters.clone();
         let named = |list: Option<&[(Arc<str>, i32)]>, name: &str| {
             list.is_some_and(|list| list.iter().any(|(known, _)| &**known == name))
         };
-        let html = self.document.html_element_name(element);
+        let html = if origin.pseudo.is_some() {
+            None
+        } else {
+            self.document.html_element_name(element)
+        };
         if matches!(html, Some(Atom::OL | Atom::UL | Atom::MENU | Atom::DIR))
             && !named(
                 changes.as_ref().map(|changes| &changes.reset[..]),
@@ -746,10 +1135,13 @@ impl Builder<'_> {
         Some(counter.value)
     }
 
-    fn generated(&mut self, node: NodeId, pseudo: Pseudo, pending: &mut Pending, shift: Shift) {
-        let Some(style) = self.styles.pseudo(node, pseudo).cloned() else {
-            return;
-        };
+    fn generated_parts(
+        &mut self,
+        origin: Origin,
+        style: &ComputedStyle,
+        pending: &mut Pending,
+        shift: Shift,
+    ) {
         let Some(parts) = style.reset.content.clone() else {
             return;
         };
@@ -757,6 +1149,42 @@ impl Builder<'_> {
         for part in parts.iter() {
             match part {
                 ContentPart::Text(part) => text.push_str(part),
+                ContentPart::Image(url) => {
+                    self.push_run(origin, Some(&text), style, pending, shift);
+                    text.clear();
+                    let image = self.styles.anonymous_box(style, Display::InlineBlock);
+                    let index = u16::try_from(pending.atomics.len()).unwrap_or(u16::MAX);
+                    if index < u16::MAX {
+                        pending.atomics.push(BlockBox {
+                            node: None,
+                            pseudo: None,
+                            style: image.clone(),
+                            contents: Contents::Replaced(Some(url.clone())),
+                            marker: None,
+                        });
+                        let tag = pending.push(origin, &image, ItemKind::Atomic(index));
+                        pending
+                            .paragraph
+                            .push_atomic(index, shifted(self.fonts, &image, tag, shift));
+                    }
+                }
+                ContentPart::Quote { open, visible } => {
+                    let quotes = &style.inherited.quotes;
+                    let depth = if *open {
+                        let depth = self.quote_depth;
+                        self.quote_depth = depth.saturating_add(1);
+                        depth
+                    } else {
+                        self.quote_depth = self.quote_depth.saturating_sub(1).max(0);
+                        self.quote_depth
+                    };
+                    if *visible {
+                        let last = quotes.len().saturating_sub(1);
+                        if let Some(pair) = quotes.get((depth.max(0) as usize).min(last)) {
+                            text.push_str(if *open { &pair.0 } else { &pair.1 });
+                        }
+                    }
+                }
                 ContentPart::Counter(name, kind) => {
                     let value = self
                         .counter(name)
@@ -779,104 +1207,201 @@ impl Builder<'_> {
                 }
             }
         }
-        let tag = pending.push(node, &style, ItemKind::Text);
-        pending.paragraph.push_text(&text, {
-            let own = match self.styles.get(node).cloned() {
-                Some(parent) => {
-                    resolve_shift(self.fonts, &parent, &style, shift, false, node.index())
-                }
-                None => shift,
-            };
-            shifted(self.fonts, &style, tag, own)
-        });
+        if !text.is_empty() {
+            self.push_text(origin, &text, style, pending, shift);
+        }
     }
 
-    fn table(&mut self, node: NodeId, style: &ComputedStyle, parts: &mut Parts) -> Table {
+    fn table_box(
+        &mut self,
+        origin: Option<Origin>,
+        mut style: ComputedStyle,
+        items: Vec<Item>,
+    ) -> BlockBox {
+        let mut parts = Parts::default();
+        let mut table = self.table(&style, items, &mut parts);
+        if style.inherited.border_collapse {
+            let outer = collapse(&mut table, &style, &parts);
+            let reset = Arc::make_mut(&mut style.reset);
+            reset.border = outer;
+            reset.border_color = web_style::Sides::all(web_style::Color::TRANSPARENT);
+            reset.padding = web_style::Sides::all(web_style::LengthPercentage::ZERO);
+        }
+        table.parts = parts;
+        BlockBox {
+            node: origin.map(|origin| origin.node),
+            pseudo: origin.and_then(|origin| origin.pseudo),
+            style,
+            contents: Contents::Table(Box::new(table)),
+            marker: None,
+        }
+    }
+
+    fn table(&mut self, style: &ComputedStyle, items: Vec<Item>, parts: &mut Parts) -> Table {
         let mut table = Table {
             captions: Vec::new(),
             rows: Vec::new(),
+            parts: Parts::default(),
             collapsed: None,
         };
         let mut headers = Vec::new();
         let mut footers = Vec::new();
         self.depth += 1;
-        for child in self.document.children(node).collect::<Vec<_>>() {
-            let Some(child_style) = self.styles.get(child).cloned() else {
+        let mut loose: Vec<Item> = Vec::new();
+        let mut rows = Vec::new();
+        for item in items {
+            let Some(child_style) = self.item_style(item).cloned() else {
                 continue;
             };
-            if self.document.kind(child) != Some(NodeKind::Element) {
+            let Some(origin) = self.element_origin(item) else {
+                if !self.is_blank_text(item) {
+                    loose.push(item);
+                }
+                continue;
+            };
+            let display = child_style.display();
+            let proper = matches!(
+                display,
+                Display::TableCaption
+                    | Display::TableHeaderGroup
+                    | Display::TableFooterGroup
+                    | Display::TableRowGroup
+                    | Display::TableRow
+            ) || (display == Display::None);
+            if !proper {
+                loose.push(item);
                 continue;
             }
-            match child_style.display() {
+            if display == Display::None && child_style.reset.table_column.is_none() {
+                continue;
+            }
+            self.flush_loose_row(style, &mut loose, &mut rows, None);
+            match display {
                 Display::TableCaption => {
-                    table.captions.push(self.block(child, child_style, None));
+                    table.captions.push(self.block(origin, child_style, None));
                 }
                 Display::TableHeaderGroup => {
-                    self.row_group(child, child_style, &mut headers, parts)
+                    self.row_group(origin, child_style, &mut headers, parts)
                 }
                 Display::TableFooterGroup => {
-                    self.row_group(child, child_style, &mut footers, parts)
+                    self.row_group(origin, child_style, &mut footers, parts)
                 }
-                Display::TableRowGroup => {
-                    self.row_group(child, child_style, &mut table.rows, parts)
-                }
-                Display::TableRow => table.rows.push(self.row(child, child_style)),
-                Display::None => self.column(child, child_style, parts),
-                _ => {
-                    let cell = self.cell(child, child_style);
-                    match table.rows.last_mut().filter(|row| row.node.is_none()) {
-                        Some(row) => row.cells.push(cell),
-                        None => table.rows.push(TableRow {
-                            node: None,
-                            style: self.styles.anonymous(style),
-                            cells: vec![cell],
-                            group: None,
-                        }),
-                    }
-                }
+                Display::TableRowGroup => self.row_group(origin, child_style, &mut rows, parts),
+                Display::TableRow => rows.push(self.row(origin, child_style)),
+                _ => self.column(origin.node, child_style, parts),
             }
         }
+        self.flush_loose_row(style, &mut loose, &mut rows, None);
         self.depth -= 1;
-        headers.append(&mut table.rows);
+        headers.append(&mut rows);
         headers.append(&mut footers);
         table.rows = headers;
         table
     }
 
+    fn element_origin(&self, item: Item) -> Option<Origin> {
+        match item {
+            Item::Node(node) => (self.document.kind(node) == Some(NodeKind::Element))
+                .then(|| Origin::element(node)),
+            Item::Generated(node, pseudo) => Some(Origin {
+                node,
+                pseudo: Some(pseudo),
+            }),
+        }
+    }
+
+    fn flush_loose_row(
+        &mut self,
+        parent: &ComputedStyle,
+        loose: &mut Vec<Item>,
+        rows: &mut Vec<TableRow>,
+        group: Option<u32>,
+    ) {
+        if loose.is_empty() {
+            return;
+        }
+        let row_style = self.styles.anonymous_box(parent, Display::TableRow);
+        let cells = self.cells_of(&row_style, std::mem::take(loose));
+        rows.push(TableRow {
+            node: None,
+            style: row_style,
+            cells,
+            group,
+        });
+    }
+
+    fn cells_of(&mut self, row_style: &ComputedStyle, items: Vec<Item>) -> Vec<TableCell> {
+        let mut cells = Vec::new();
+        let mut loose: Vec<Item> = Vec::new();
+        for item in items {
+            let Some(style) = self.item_style(item).cloned() else {
+                continue;
+            };
+            if let Some(origin) = self.element_origin(item)
+                && style.display() == Display::TableCell
+                && !style.is_out_of_flow()
+                && style.reset.float == web_style::Float::None
+            {
+                self.flush_loose_cell(row_style, &mut loose, &mut cells);
+                cells.push(self.cell(origin, style));
+            } else if style.display() == Display::None {
+            } else if !self.is_blank_text(item) || !loose.is_empty() {
+                loose.push(item);
+            }
+        }
+        self.flush_loose_cell(row_style, &mut loose, &mut cells);
+        cells
+    }
+
+    fn flush_loose_cell(
+        &mut self,
+        row_style: &ComputedStyle,
+        loose: &mut Vec<Item>,
+        cells: &mut Vec<TableCell>,
+    ) {
+        while loose.last().is_some_and(|&item| self.is_blank_text(item)) {
+            loose.pop();
+        }
+        if loose.is_empty() {
+            return;
+        }
+        let style = self.styles.anonymous_box(row_style, Display::TableCell);
+        self.depth += 1;
+        let block = self.container(None, style, Some(std::mem::take(loose)), None);
+        self.depth -= 1;
+        cells.push(TableCell {
+            block,
+            columns: 1,
+            rows: 1,
+        });
+    }
+
     fn row_group(
         &mut self,
-        group: NodeId,
+        group: Origin,
         group_style: ComputedStyle,
         rows: &mut Vec<TableRow>,
         parts: &mut Parts,
     ) {
         let id = parts.groups.len() as u32;
-        parts.groups.push(group_style);
-        for child in self.document.children(group).collect::<Vec<_>>() {
-            if self.document.kind(child) != Some(NodeKind::Element) {
-                continue;
-            }
-            let Some(style) = self.styles.get(child).cloned() else {
+        parts.groups.push(group_style.clone());
+        let mut loose: Vec<Item> = Vec::new();
+        for item in self.items_of(group) {
+            let Some(style) = self.item_style(item).cloned() else {
                 continue;
             };
-            match style.display() {
-                Display::TableRow => {
-                    let mut row = self.row(child, style);
-                    row.group = Some(id);
-                    rows.push(row);
-                }
-                Display::None => {}
-                _ => {
-                    let cell = self.cell(child, style.clone());
-                    rows.push(TableRow {
-                        node: None,
-                        style: self.styles.anonymous(&style),
-                        cells: vec![cell],
-                        group: Some(id),
-                    });
-                }
+            if let Some(origin) = self.element_origin(item)
+                && style.display() == Display::TableRow
+            {
+                self.flush_loose_row(&group_style, &mut loose, rows, Some(id));
+                let mut row = self.row(origin, style);
+                row.group = Some(id);
+                rows.push(row);
+            } else if style.display() != Display::None && !self.is_blank_text(item) {
+                loose.push(item);
             }
         }
+        self.flush_loose_row(&group_style, &mut loose, rows, Some(id));
     }
 
     fn column(&self, node: NodeId, style: ComputedStyle, parts: &mut Parts) {
@@ -923,36 +1448,29 @@ impl Builder<'_> {
         }
     }
 
-    fn row(&mut self, row: NodeId, style: ComputedStyle) -> TableRow {
-        let mut cells = Vec::new();
-        for child in self.document.children(row).collect::<Vec<_>>() {
-            if self.document.kind(child) != Some(NodeKind::Element) {
-                continue;
-            }
-            let Some(child_style) = self.styles.get(child).cloned() else {
-                continue;
-            };
-            if child_style.display() != Display::None {
-                cells.push(self.cell(child, child_style));
-            }
-        }
+    fn row(&mut self, row: Origin, style: ComputedStyle) -> TableRow {
+        let items = self.items_of(row);
+        let cells = self.cells_of(&style, items);
         TableRow {
-            node: Some(row),
+            node: Some(row.node),
             style,
             cells,
             group: None,
         }
     }
 
-    fn cell(&mut self, cell: NodeId, style: ComputedStyle) -> TableCell {
-        let span = |name: Atom, default: u32, max: u32| {
+    fn cell(&mut self, cell: Origin, style: ComputedStyle) -> TableCell {
+        let attribute = |name: Atom, default: u32, max: u32| {
+            if cell.pseudo.is_some() {
+                return default as u16;
+            }
             self.document
-                .attribute(cell, name)
+                .attribute(cell.node, name)
                 .and_then(|value| value.trim().parse::<u32>().ok())
                 .map_or(default, |value| value.clamp(1, max)) as u16
         };
-        let columns = span(Atom::COLSPAN, 1, 1000);
-        let rows = span(Atom::ROWSPAN, 1, 65534);
+        let columns = attribute(Atom::COLSPAN, 1, 1000);
+        let rows = attribute(Atom::ROWSPAN, 1, 65534);
         self.depth += 1;
         let block = self.block(cell, style, None);
         self.depth -= 1;
@@ -965,12 +1483,14 @@ impl Builder<'_> {
 
     fn flush(&mut self, blocks: &mut Vec<BlockBox>, mut pending: Pending, style: &ComputedStyle) {
         if pending.paragraph.is_blank() && !pending.paragraph.has_atomics() {
-            blocks.append(&mut pending.out_of_flow);
+            let mut anchored = std::mem::take(&mut pending.out_of_flow);
+            blocks.append(&mut anchored);
             return;
         }
         let anonymous = self.styles.anonymous(style);
         blocks.push(BlockBox {
             node: None,
+            pseudo: None,
             style: anonymous,
             contents: Contents::Inline(Box::new(self.finish(pending))),
             marker: None,
@@ -1005,6 +1525,56 @@ impl Builder<'_> {
 }
 
 const LIST_ITEM: &str = "list-item";
+
+fn transformed<'t>(
+    text: &'t str,
+    style: &ComputedStyle,
+    previous: Option<char>,
+) -> std::borrow::Cow<'t, str> {
+    use std::borrow::Cow;
+    match style.inherited.text_transform {
+        TextTransform::None => Cow::Borrowed(text),
+        TextTransform::Uppercase => Cow::Owned(text.to_uppercase()),
+        TextTransform::Lowercase => Cow::Owned(text.to_lowercase()),
+        TextTransform::Capitalize => {
+            let mut word_start = previous.is_none_or(|ch| !is_word_char(ch));
+            let mut result = String::with_capacity(text.len());
+            for ch in text.chars() {
+                if word_start && is_word_char(ch) {
+                    result.extend(ch.to_uppercase());
+                } else {
+                    result.push(ch);
+                }
+                word_start = !is_word_char(ch);
+            }
+            Cow::Owned(result)
+        }
+        TextTransform::FullWidth => Cow::Owned(text.chars().map(full_width).collect()),
+        TextTransform::FullSizeKana => Cow::Owned(text.chars().map(full_size_kana).collect()),
+    }
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '\'' || ch == '\u{2019}'
+}
+
+fn full_width(ch: char) -> char {
+    match ch {
+        ' ' => '\u{3000}',
+        '!'..='~' => char::from_u32(ch as u32 - 0x21 + 0xFF01).unwrap_or(ch),
+        _ => ch,
+    }
+}
+
+fn full_size_kana(ch: char) -> char {
+    const SMALL: &str = "ぁぃぅぇぉゕゖっゃゅょゎァィゥェォヵㇰヶㇱㇲッㇳㇴㇵㇶㇷㇸㇹㇺャュョㇻㇼㇽㇾㇿヮｧｨｩｪｫｯｬｭｮ";
+    const FULL: &str = "あいうえおかけつやゆよわアイウエオカクケシスツトヌハヒフヘホムヤユヨラリルレロワｱｲｳｴｵﾂﾔﾕﾖ";
+    SMALL
+        .chars()
+        .position(|small| small == ch)
+        .and_then(|index| FULL.chars().nth(index))
+        .unwrap_or(ch)
+}
 
 struct Counter {
     name: Arc<str>,

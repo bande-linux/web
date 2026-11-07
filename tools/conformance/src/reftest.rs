@@ -73,6 +73,33 @@ pub fn run(wpt: &Path) -> Result<Vec<Tally>, String> {
     Ok(tallies.into())
 }
 
+pub fn dump(wpt: &Path, directory: &Path, tests: &[PathBuf]) -> Result<(), String> {
+    web_content::set_font_files(&[wpt.join("fonts/Ahem.ttf")])
+        .map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    for path in tests {
+        let path = wpt.join(path);
+        let test = discover(wpt, 0, path.clone()).ok_or(format!("{}: no reftest", path.display()))?;
+        let name = crate::file_name(&path);
+        let write = |suffix: &str, source: &Path| {
+            let pixels = engine::render(source).ok_or(format!("{}: no render", source.display()))?;
+            let target = directory.join(format!("{name}.{suffix}.png"));
+            let file = std::fs::File::create(&target).map_err(|error| error.to_string())?;
+            let mut encoder = png::Encoder::new(file, pixels.width, pixels.height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder
+                .write_header()
+                .and_then(|mut writer| writer.write_image_data(&pixels.rgba))
+                .map_err(|error| error.to_string())
+        };
+        write("test", &path)?;
+        for (index, reference) in test.matches.iter().chain(&test.mismatches).enumerate() {
+            write(&format!("ref{index}"), reference)?;
+        }
+    }
+    Ok(())
+}
+
 impl Reftest {
     fn passes(&self, blank: &mut bool) -> bool {
         let Some(test) = engine::render(&self.path) else {

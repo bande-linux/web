@@ -15,6 +15,29 @@ impl<'a, 'b> Flow<'a, 'b> {
             };
             return (width, width);
         }
+        let (min, max) = self.intrinsic_content(block, cb);
+        let adjust = |value: f32| {
+            if reset.border_box {
+                (value - frame(&block.style, cb.0).0).max(0.0)
+            } else {
+                value
+            }
+        };
+        let floor = adjust(reset.min_width.px);
+        let ceiling = reset
+            .max_width
+            .filter(|max| max.percent == 0.0)
+            .map_or(f32::INFINITY, |max| adjust(max.px))
+            .max(floor);
+        (min.min(ceiling).max(floor), max.min(ceiling).max(floor))
+    }
+
+    pub(crate) fn intrinsic_content(
+        &mut self,
+        block: &'b BlockBox,
+        cb: (f32, Option<f32>),
+    ) -> (f32, f32) {
+        let reset = &block.style.reset;
         match &block.contents {
             Contents::Replaced(_) => {
                 let width = self.replaced_size(block, cb).0;
@@ -47,7 +70,8 @@ impl<'a, 'b> Flow<'a, 'b> {
                     .fold((0.0, 0.0), |sum: (f32, f32), size| {
                         (sum.0.max(size.0), sum.1 + size.1)
                     });
-                (min.max(floats.0), max + floats.1)
+                let indent = block.style.inherited.text_indent.resolve(cb.0);
+                (min.max(floats.0), max + floats.1 + indent)
             }
             Contents::Blocks(children) | Contents::Flex(children) | Contents::Grid(children) => {
                 let row = matches!(block.style.display(), Display::Flex | Display::InlineFlex)

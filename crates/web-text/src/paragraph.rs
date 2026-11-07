@@ -1,9 +1,11 @@
 use std::ops::Range;
 
 use icu_segmenter::LineSegmenter;
-use icu_segmenter::options::LineBreakOptions;
+use icu_segmenter::options::{LineBreakOptions, LineBreakWordOption};
+use icu_properties::CodePointMapData;
+use icu_properties::props::GeneralCategory;
 use unicode_bidi::{BidiInfo, Level};
-use web_style::WhiteSpace;
+use web_style::{WhiteSpace, WordBreak};
 
 use crate::fonts::{FontId, FontKey, Fonts, is_inherited};
 
@@ -16,6 +18,11 @@ pub struct RunStyle {
     pub align: LineAlign,
     pub white_space: WhiteSpace,
     pub tag: u32,
+    pub letter_spacing: f32,
+    pub word_spacing: f32,
+    pub tab_columns: u32,
+    pub word_break: WordBreak,
+    pub overflow_wrap: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -113,6 +120,7 @@ pub struct Lines {
     pub items: Vec<LineItem>,
     pub glyphs: Vec<Glyph>,
     pub height: f32,
+    pub empty_anchors: Vec<(u32, f32)>,
 }
 
 impl Lines {
@@ -131,14 +139,16 @@ pub struct Paragraph {
     text: String,
     runs: Vec<(u32, RunStyle, Piece)>,
     column: u32,
+    trimmable: usize,
+    collapsing: bool,
+    has_spacer: bool,
 }
-
-const TAB_COLUMNS: u32 = 8;
 
 impl Paragraph {
     pub fn new(rtl: bool) -> Self {
         Self {
             rtl,
+            collapsing: true,
             ..Self::default()
         }
     }
@@ -152,7 +162,11 @@ impl Paragraph {
     }
 
     pub fn is_blank(&self) -> bool {
-        self.text.is_empty()
+        self.text.is_empty() && !self.has_spacer
+    }
+
+    pub fn last_char(&self) -> Option<char> {
+        self.text.chars().next_back()
     }
 
     pub fn push_text(&mut self, text: &str, style: RunStyle) {
@@ -161,22 +175,34 @@ impl Paragraph {
             match ch {
                 '\r' => {}
                 '\n' if white_space.preserves_newlines() => {
+                    if white_space.collapses_spaces() {
+                        self.text.truncate(self.text.len() - self.trimmable);
+                    }
                     self.text.push('\n');
                     self.column = 0;
+                    self.trimmable = 0;
+                    self.collapsing = white_space.collapses_spaces();
                 }
                 ' ' | '\t' | '\n' | '\x0c' if white_space.collapses_spaces() => {
-                    if !self.text.is_empty() && !self.text.ends_with([' ', '\n']) {
+                    if !self.collapsing {
                         self.text.push(' ');
+                        self.trimmable = 1;
+                        self.collapsing = true;
                     }
                 }
                 '\t' => {
-                    let spaces = TAB_COLUMNS - self.column % TAB_COLUMNS;
+                    let tab = style.tab_columns.max(1);
+                    let spaces = tab - self.column % tab;
                     self.text.extend(std::iter::repeat_n(' ', spaces as usize));
                     self.column += spaces;
+                    self.trimmable = 0;
+                    self.collapsing = false;
                 }
                 _ => {
                     self.text.push(ch);
                     self.column += 1;
+                    self.trimmable = 0;
+                    self.collapsing = false;
                 }
             }
         }
@@ -184,8 +210,11 @@ impl Paragraph {
     }
 
     pub fn push_break(&mut self, style: RunStyle) {
+        self.text.truncate(self.text.len() - self.trimmable);
         self.text.push('\n');
         self.column = 0;
+        self.trimmable = 0;
+        self.collapsing = true;
         self.end_run(style);
     }
 
@@ -199,7 +228,8 @@ impl Paragraph {
     }
 
     pub fn push_spacer(&mut self, width: f32, style: RunStyle) {
-        if width > 0.0 {
+        if width != 0.0 {
+            self.has_spacer = true;
             self.runs
                 .push((self.text.len() as u32, style, Piece::Spacer(width)));
         }
@@ -209,6 +239,13 @@ impl Paragraph {
         self.runs
             .push((self.text.len() as u32, style, Piece::Atomic(index)));
         self.atomics = self.atomics.max(index + 1);
+        self.trimmable = 0;
+        self.collapsing = false;
+    }
+
+    pub fn push_anchor(&mut self, index: u16, style: RunStyle) {
+        self.runs
+            .push((self.text.len() as u32, style, Piece::Anchor(index)));
     }
 
     pub fn has_atomics(&self) -> bool {
@@ -251,6 +288,7 @@ impl Paragraph {
             if piece != Piece::Text {
                 let (flags, id, advance) = match piece {
                     Piece::Atomic(index) => (ATOMIC, index, 0.0),
+                    Piece::Anchor(index) => (ANCHOR, index, 0.0),
                     Piece::Spacer(width) => (SPACER, 0, width),
                     Piece::Text => (0, 0, 0.0),
                 };
@@ -297,7 +335,7 @@ impl Paragraph {
                             fonts,
                             group_span,
                             start..position,
-                            style.size,
+                            style,
                             &mut shaped,
                             &mut clusters,
                         );
@@ -326,7 +364,7 @@ impl Paragraph {
                     fonts,
                     group_span,
                     start..range.end,
-                    style.size,
+                    style,
                     &mut shaped,
                     &mut clusters,
                 );
@@ -344,7 +382,7 @@ impl Paragraph {
         for index in 0..glyphs.len() {
             let atomic = glyphs
                 .get(index)
-                .is_some_and(|glyph| glyph.flags & ATOMIC != 0);
+                .is_some_and(|glyph| glyph.flags & ANCHOR == ATOMIC);
             if atomic {
                 if let Some(glyph) = glyphs.get_mut(index) {
                     glyph.flags |= BREAK;
@@ -365,8 +403,31 @@ impl Paragraph {
         for (glyph, &cluster) in glyphs.iter_mut().zip(clusters) {
             if glyph.flags & (SPACER | ATOMIC) == 0 && bytes.get(cluster as usize) == Some(&b' ') {
                 glyph.flags |= SPACE;
+                let run = self
+                    .runs
+                    .iter()
+                    .find(|&&(end, _, piece)| end > cluster && piece == Piece::Text);
+                if run.is_none_or(|(_, style, _)| style.white_space != WhiteSpace::Pre) {
+                    glyph.flags |= HANGS;
+                }
             }
         }
+        let special = self.runs.iter().any(|(_, style, piece)| {
+            *piece == Piece::Text && style.word_break != WordBreak::Normal
+        });
+        let special_breaks = |option: LineBreakWordOption| -> Vec<usize> {
+            let mut options = LineBreakOptions::default();
+            options.word_option = Some(option);
+            LineSegmenter::new_auto(options).segment_str(text).collect()
+        };
+        let (break_all, keep_all) = if special {
+            (
+                special_breaks(LineBreakWordOption::BreakAll),
+                special_breaks(LineBreakWordOption::KeepAll),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let wraps_before = |position: usize| {
             let run = self
                 .runs
@@ -381,13 +442,44 @@ impl Paragraph {
             run.and_then(|run| self.runs.get(run))
                 .is_none_or(|(_, style, _)| style.white_space.wraps())
         };
+        let word_break_at = |position: usize| {
+            self.runs
+                .iter()
+                .find(|&&(end, _, piece)| end as usize >= position && piece == Piece::Text)
+                .map_or(WordBreak::Normal, |(_, style, _)| style.word_break)
+        };
+        let normal: Vec<usize> = LineSegmenter::new_auto(LineBreakOptions::default())
+            .segment_str(text)
+            .collect();
+        let mut positions: Vec<usize> = if special {
+            let mut merged: Vec<usize> = normal
+                .iter()
+                .copied()
+                .filter(|&position| word_break_at(position) == WordBreak::Normal)
+                .chain(
+                    break_all
+                        .iter()
+                        .copied()
+                        .filter(|&position| word_break_at(position) == WordBreak::BreakAll),
+                )
+                .chain(
+                    keep_all
+                        .iter()
+                        .copied()
+                        .filter(|&position| word_break_at(position) == WordBreak::KeepAll),
+                )
+                .collect();
+            merged.sort_unstable();
+            merged.dedup();
+            merged
+        } else {
+            normal
+        };
+        positions.retain(|&position| {
+            position != 0 && (bytes.get(position - 1) == Some(&b'\n') || wraps_before(position))
+        });
         let mut glyph = 0;
-        let breaks = LineSegmenter::new_auto(LineBreakOptions::default()).segment_str(text);
-        for position in breaks {
-            if position == 0 || !(bytes.get(position - 1) == Some(&b'\n') || wraps_before(position))
-            {
-                continue;
-            }
+        for position in positions {
             while clusters
                 .get(glyph + 1)
                 .is_some_and(|&cluster| (cluster as usize) < position)
@@ -409,7 +501,7 @@ impl Paragraph {
         fonts: &mut Fonts,
         span: Span,
         range: Range<usize>,
-        size: f32,
+        style: RunStyle,
         shaped: &mut ShapedParagraph,
         clusters: &mut Vec<u32>,
     ) {
@@ -419,24 +511,125 @@ impl Paragraph {
         let rtl = span.level % 2 == 1;
         let span_index = shaped.spans.len() as u32;
         shaped.spans.push(span);
+        let spaced = style.letter_spacing != 0.0 || style.word_spacing != 0.0;
         let mut offset = range.start as u32;
         for word in text.split_inclusive(' ') {
-            fonts.shape_word(span.font, size, rtl, word, &mut |glyph, (x, y)| {
-                let moved = x != 0.0 || y != 0.0;
-                if moved {
-                    shaped.offsets.push((shaped.glyphs.len() as u32, x, y));
-                }
-                shaped.glyphs.push(ShapedGlyph {
-                    id: glyph.id,
-                    flags: if moved { OFFSET } else { 0 },
-                    span: span_index,
-                    advance: glyph.advance,
-                });
-                clusters.push(offset + glyph.cluster);
-            });
+            let first = shaped.glyphs.len();
+            fonts.shape_word(
+                span.font,
+                style.size,
+                rtl,
+                style.letter_spacing != 0.0,
+                word,
+                &mut |glyph, (x, y)| {
+                    let moved = x != 0.0 || y != 0.0;
+                    if moved {
+                        shaped.offsets.push((shaped.glyphs.len() as u32, x, y));
+                    }
+                    shaped.glyphs.push(ShapedGlyph {
+                        id: glyph.id,
+                        flags: if moved { OFFSET } else { 0 },
+                        span: span_index,
+                        advance: glyph.advance,
+                    });
+                    clusters.push(offset + glyph.cluster);
+                },
+            );
+            if spaced {
+                apply_spacing(
+                    word,
+                    style,
+                    shaped.glyphs.get_mut(first..).unwrap_or_default(),
+                    clusters.get(first..).unwrap_or_default(),
+                    offset,
+                );
+            }
             offset += word.len() as u32;
         }
     }
+}
+
+fn apply_spacing(
+    word: &str,
+    style: RunStyle,
+    glyphs: &mut [ShapedGlyph],
+    clusters: &[u32],
+    offset: u32,
+) {
+    let bytes = word.as_bytes();
+    let mut index = 0;
+    while index < glyphs.len() {
+        let cluster = clusters.get(index).copied().unwrap_or(offset);
+        let mut last = index;
+        while clusters.get(last + 1) == Some(&cluster) {
+            last += 1;
+        }
+        if let Some(glyph) = glyphs.get_mut(last) {
+            glyph.advance += style.letter_spacing;
+            let at = cluster.saturating_sub(offset) as usize;
+            let spacing = bytes.get(at) == Some(&b' ')
+                || word.get(at..).is_some_and(|rest| rest.starts_with('\u{a0}'));
+            if spacing {
+                glyph.advance += style.word_spacing;
+            }
+        }
+        index = last + 1;
+    }
+}
+
+pub fn first_letter(text: &str) -> Option<Range<usize>> {
+    let maps = CodePointMapData::<GeneralCategory>::new();
+    let is_punctuation = |ch: char| {
+        matches!(
+            maps.get(ch),
+            GeneralCategory::OpenPunctuation
+                | GeneralCategory::ClosePunctuation
+                | GeneralCategory::InitialPunctuation
+                | GeneralCategory::FinalPunctuation
+                | GeneralCategory::OtherPunctuation
+        )
+    };
+    let is_mark = |ch: char| {
+        matches!(
+            maps.get(ch),
+            GeneralCategory::NonspacingMark
+                | GeneralCategory::EnclosingMark
+                | GeneralCategory::SpacingMark
+        )
+    };
+    let is_space = |ch: char| maps.get(ch) == GeneralCategory::SpaceSeparator;
+    let start = text.len() - text.trim_start_matches(['\n', '\t', '\r', '\x0c', ' ']).len();
+    let rest = text.get(start..)?;
+    let mut letter = None;
+    for (at, ch) in rest.char_indices() {
+        if is_punctuation(ch) || is_space(ch) {
+            continue;
+        }
+        letter = Some((at, ch));
+        break;
+    }
+    let (at, ch) = letter?;
+    if ch.is_control() {
+        return None;
+    }
+    let mut end = at + ch.len_utf8();
+    let mut marks = true;
+    let mut pending = end;
+    for (offset, next) in rest.get(end..)?.char_indices() {
+        let position = end + offset;
+        if marks && is_mark(next) {
+            pending = position + next.len_utf8();
+        } else if is_punctuation(next) {
+            marks = false;
+            pending = position + next.len_utf8();
+        } else if is_space(next) && next != ' ' {
+            marks = false;
+        } else {
+            break;
+        }
+    }
+    end = pending;
+    Some(start..start + end)
 }
 
 const SPACE: u8 = 1;
@@ -446,12 +639,15 @@ const NEWLINE: u8 = 8;
 const SPACER: u8 = 16;
 const ATOMIC: u8 = 32;
 const OFFSET: u8 = 64;
+const HANGS: u8 = 128;
+const ANCHOR: u8 = ATOMIC | SPACER;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Piece {
     Text,
     Spacer(f32),
     Atomic(u16),
+    Anchor(u16),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -478,7 +674,11 @@ struct ShapedGlyph {
 
 impl ShapedGlyph {
     fn hangs(&self) -> bool {
-        self.flags & (SPACE | NEWLINE) != 0
+        self.flags & (HANGS | NEWLINE) != 0
+    }
+
+    fn is_anchor(&self) -> bool {
+        self.flags & ANCHOR == ANCHOR
     }
 }
 
@@ -494,6 +694,19 @@ struct Segment {
     width: f32,
     trailing: f32,
     mandatory: bool,
+    visible: bool,
+}
+
+struct LineSpace {
+    left: f32,
+    width: f32,
+}
+
+pub trait LinePlacement {
+    fn space(&mut self, top: f32) -> (f32, f32);
+    fn is_float(&self, anchor: u16) -> bool;
+    fn place(&mut self, anchor: u16, top: f32, used: f32, has_content: bool) -> Option<(f32, f32)>;
+    fn place_below(&mut self, anchor: u16, top: f32);
 }
 
 impl ShapedParagraph {
@@ -502,6 +715,10 @@ impl ShapedParagraph {
             + self.offsets.capacity() * size_of::<(u32, f32, f32)>()
             + self.spans.capacity() * size_of::<Span>()
             + self.styles.capacity() * size_of::<RunStyle>()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.glyphs.is_empty()
     }
 
     fn offset(&self, index: usize) -> (f32, f32) {
@@ -530,34 +747,75 @@ impl ShapedParagraph {
     pub fn lines(
         &self,
         fonts: &mut Fonts,
-        space: &mut dyn FnMut(f32) -> (f32, f32),
+        placement: &mut dyn LinePlacement,
         strut: RunStyle,
         justify: bool,
+        indent: f32,
         atomics: &[AtomicSize],
     ) -> Lines {
         let mut lines = Lines::default();
         let mut start = 0;
         let mut line_width = 0.0;
         let mut has_content = false;
-        let (mut left, mut width) = space(0.0);
-        for segment in self.segments(atomics) {
-            if has_content && line_width + segment.width - segment.trailing > width {
-                let justify_to = justify.then_some(width);
+        let (left, width) = placement.space(0.0);
+        let mut line = LineSpace {
+            left: left + indent,
+            width: width - indent,
+        };
+        let mut deferred: Vec<u16> = Vec::new();
+        let mut segments = self.segments(atomics);
+        let mut split: Vec<Segment> = Vec::new();
+        while let Some(segment) = split.pop().or_else(|| segments.next()) {
+            if segment.width - segment.trailing > line.width
+                && segment.glyphs.len() > 1
+                && self.wraps_anywhere(&segment)
+            {
+                split.extend(segment.glyphs.clone().rev().filter_map(|index| {
+                    let glyph = self.glyphs.get(index)?;
+                    let width = Self::advance(glyph, atomics);
+                    let last = index + 1 == segment.glyphs.end;
+                    Some(Segment {
+                        glyphs: index..index + 1,
+                        width,
+                        trailing: if glyph.hangs() { width } else { 0.0 },
+                        mandatory: last && segment.mandatory,
+                        visible: !glyph.is_anchor(),
+                    })
+                }));
+                continue;
+            }
+            if has_content && line_width + segment.width - segment.trailing > line.width {
+                let justify_to = justify.then_some(line.width);
                 self.push_line(
                     &mut lines,
                     fonts,
                     start..segment.glyphs.start,
                     strut,
                     justify_to,
-                    (left, width),
+                    (line.left, line.width),
                     atomics,
                 );
-                (left, width) = space(lines.height);
+                for anchor in deferred.drain(..) {
+                    placement.place_below(anchor, lines.height);
+                }
+                (line.left, line.width) = placement.space(lines.height);
                 start = segment.glyphs.start;
                 line_width = 0.0;
             }
+            for glyph in self.glyphs.get(segment.glyphs.clone()).unwrap_or_default() {
+                if glyph.is_anchor() && placement.is_float(glyph.id) {
+                    match placement.place(glyph.id, lines.height, line_width, has_content) {
+                        Some((left, width)) => {
+                            let first = if lines.lines.is_empty() { indent } else { 0.0 };
+                            line.left = left + first;
+                            line.width = width - first;
+                        }
+                        None => deferred.push(glyph.id),
+                    }
+                }
+            }
             line_width += segment.width;
-            has_content = true;
+            has_content = has_content || segment.visible;
             if segment.mandatory {
                 self.push_line(
                     &mut lines,
@@ -565,10 +823,13 @@ impl ShapedParagraph {
                     start..segment.glyphs.end,
                     strut,
                     None,
-                    (left, width),
+                    (line.left, line.width),
                     atomics,
                 );
-                (left, width) = space(lines.height);
+                for anchor in deferred.drain(..) {
+                    placement.place_below(anchor, lines.height);
+                }
+                (line.left, line.width) = placement.space(lines.height);
                 start = segment.glyphs.end;
                 line_width = 0.0;
                 has_content = false;
@@ -581,15 +842,39 @@ impl ShapedParagraph {
                 start..self.glyphs.len(),
                 strut,
                 None,
-                (left, width),
+                (line.left, line.width),
                 atomics,
             );
+        } else if start < self.glyphs.len() {
+            self.push_empty_anchors(&mut lines, start..self.glyphs.len());
+        }
+        for anchor in deferred {
+            placement.place_below(anchor, lines.height);
         }
         lines
     }
 
+    fn push_empty_anchors(&self, lines: &mut Lines, range: Range<usize>) {
+        for glyph in self.glyphs.get(range).unwrap_or_default() {
+            if glyph.is_anchor()
+                && let Some(span) = self.spans.get(glyph.span as usize)
+                && let Some(style) = self.styles.get(span.run as usize)
+            {
+                lines.empty_anchors.push((style.tag, lines.height));
+            }
+        }
+    }
+
+    fn wraps_anywhere(&self, segment: &Segment) -> bool {
+        self.glyphs
+            .get(segment.glyphs.start)
+            .and_then(|glyph| self.spans.get(glyph.span as usize))
+            .and_then(|span| self.styles.get(span.run as usize))
+            .is_some_and(|style| style.overflow_wrap)
+    }
+
     fn advance(glyph: &ShapedGlyph, atomics: &[AtomicSize]) -> f32 {
-        if glyph.flags & ATOMIC != 0 {
+        if glyph.flags & ANCHOR == ATOMIC {
             atomics
                 .get(usize::from(glyph.id))
                 .map_or(0.0, |atomic| atomic.width)
@@ -604,10 +889,12 @@ impl ShapedParagraph {
             let first = start;
             let mut width = 0.0;
             let mut trailing = 0.0;
+            let mut visible = false;
             while let Some(glyph) = self.glyphs.get(start) {
                 start += 1;
                 let advance = Self::advance(glyph, atomics);
                 width += advance;
+                visible = visible || !glyph.is_anchor();
                 if glyph.hangs() {
                     trailing += advance;
                 } else {
@@ -619,6 +906,7 @@ impl ShapedParagraph {
                         width,
                         trailing,
                         mandatory: glyph.flags & MANDATORY != 0,
+                        visible,
                     });
                 }
             }
@@ -627,6 +915,7 @@ impl ShapedParagraph {
                 width,
                 trailing,
                 mandatory: false,
+                visible,
             })
         })
     }
@@ -677,7 +966,9 @@ impl ShapedParagraph {
             .filter_map(|&index| Some((base + index, shaped.get(index)?)))
             .filter(|(_, glyph)| glyph.flags & NEWLINE == 0)
             .collect();
-        for group in visual.chunk_by(|a, b| a.1.span == b.1.span) {
+        for group in visual.chunk_by(|a, b| {
+            a.1.span == b.1.span && !a.1.is_anchor() && !b.1.is_anchor()
+        }) {
             let Some((span, style)) = group.first().map(|first| first.1).and_then(|first| {
                 let span = *self.spans.get(first.span as usize)?;
                 Some((span, *self.styles.get(span.run as usize)?))
@@ -687,10 +978,12 @@ impl ShapedParagraph {
             let atomic = group
                 .first()
                 .map(|first| first.1)
-                .filter(|glyph| glyph.flags & ATOMIC != 0)
+                .filter(|glyph| glyph.flags & ANCHOR == ATOMIC)
                 .and_then(|glyph| atomics.get(usize::from(glyph.id)));
+            let anchor_only = group.iter().all(|(_, glyph)| glyph.is_anchor());
             let (raw_above, raw_below) = match atomic {
                 Some(atomic) => (atomic.ascent, atomic.descent),
+                None if anchor_only => (0.0, 0.0),
                 None => vertical_extent(
                     fonts,
                     style.line_height.is_none().then_some(span.font),
@@ -718,6 +1011,7 @@ impl ShapedParagraph {
                         .unwrap_or_default();
                     edges.push((lines.items.len(), group, shift));
                 }
+                _ if anchor_only => {}
                 _ => {
                     above = f32::max(above, raw_above + shift);
                     below = f32::max(below, raw_below - shift);

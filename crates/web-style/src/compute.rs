@@ -13,8 +13,8 @@ use crate::stylist::Viewport;
 use crate::{
     Align, BorderStyle, Clear, Color, ComputedStyle, ContentPart, Direction, Display,
     FlexDirection, Float, FontFamily, InheritedStyle, LengthPercentage, LineHeight, ListStyleType,
-    MEDIUM, ObjectFit, Position, ResetStyle, Sides, TableColumn, TextAlign, TextDecorations,
-    VerticalAlign, WhiteSpace,
+    MEDIUM, ObjectFit, Position, ResetStyle, Sides, TabSize, TableColumn, TextAlign,
+    TextDecorations, TextTransform, VerticalAlign, WhiteSpace, WordBreak,
 };
 
 pub(crate) enum Value<'a> {
@@ -216,6 +216,15 @@ impl Computer<'_> {
         }
     }
 
+    fn spacing(&self, value: &specified::Spacing) -> f32 {
+        match value {
+            specified::Spacing::Normal => 0.0,
+            specified::Spacing::LengthPercentage(value) => {
+                self.length_percentage(value).resolve(self.em())
+            }
+        }
+    }
+
     fn color(&self, value: &CssColor) -> Color {
         color(value.resolve(rgba(self.inherited.color), false))
     }
@@ -391,6 +400,7 @@ impl Computer<'_> {
         match (id, value) {
             (Id::Display, V::Display(display)) => {
                 use specified::Display as D;
+                self.reset.flow_root = matches!(display, D::FlowRoot);
                 self.reset.table_column = match display {
                     D::TableColumn => Some(TableColumn::Column),
                     D::TableColumnGroup => Some(TableColumn::Group),
@@ -457,6 +467,61 @@ impl Computer<'_> {
             }
             (Id::TextAlign, V::TextAlign(value)) => {
                 self.inherited.text_align = self.text_align(*value)
+            }
+            (Id::LetterSpacing, V::Spacing(value)) => {
+                self.inherited.letter_spacing = self.spacing(value)
+            }
+            (Id::WordSpacing, V::Spacing(value)) => {
+                self.inherited.word_spacing = self.spacing(value)
+            }
+            (Id::TextIndent, V::LengthPercentage(value)) => {
+                self.inherited.text_indent = self.length_percentage(value)
+            }
+            (Id::TextTransform, V::TextTransform(value)) => {
+                use keywords::TextTransform as T;
+                self.inherited.text_transform = match value {
+                    T::None => TextTransform::None,
+                    T::Capitalize => TextTransform::Capitalize,
+                    T::Uppercase => TextTransform::Uppercase,
+                    T::Lowercase => TextTransform::Lowercase,
+                    T::FullWidth => TextTransform::FullWidth,
+                    T::FullSizeKana => TextTransform::FullSizeKana,
+                }
+            }
+            (Id::TabSize, V::TabSize(value)) => {
+                self.inherited.tab_size = match value {
+                    specified::TabSize::Number(spaces) => TabSize::Spaces(*spaces),
+                    specified::TabSize::Length(length) => {
+                        TabSize::Px(self.length_percentage(length).px)
+                    }
+                }
+            }
+            (Id::WordBreak, V::WordBreak(value)) => {
+                use keywords::WordBreak as W;
+                self.inherited.word_break = match value {
+                    W::BreakAll => WordBreak::BreakAll,
+                    W::KeepAll => WordBreak::KeepAll,
+                    _ => WordBreak::Normal,
+                }
+            }
+            (Id::OverflowWrap, V::OverflowWrap(value)) => {
+                self.inherited.overflow_wrap = !matches!(value, keywords::OverflowWrap::Normal)
+            }
+            (Id::Quotes, V::Quotes(value)) => {
+                self.inherited.quotes = match value {
+                    specified::Quotes::Auto => crate::default_quotes(),
+                    specified::Quotes::None => Arc::new([]),
+                    specified::Quotes::Pairs(pairs) => pairs
+                        .iter()
+                        .map(|(open, close)| (Arc::from(&**open), Arc::from(&**close)))
+                        .collect(),
+                }
+            }
+            (Id::CaptionSide, V::CaptionSide(value)) => {
+                self.inherited.caption_bottom = matches!(value, keywords::CaptionSide::Bottom)
+            }
+            (Id::EmptyCells, V::EmptyCells(value)) => {
+                self.inherited.hide_empty_cells = matches!(value, keywords::EmptyCells::Hide)
             }
             (Id::Direction, V::Direction(direction)) => {
                 self.inherited.direction = match direction {
@@ -678,6 +743,9 @@ impl Computer<'_> {
             (Id::BorderCollapse, V::BorderCollapse(value)) => {
                 self.inherited.border_collapse = matches!(value, keywords::BorderCollapse::Collapse)
             }
+            (Id::TableLayout, V::TableLayout(value)) => {
+                self.reset.fixed_table = matches!(value, keywords::TableLayout::Fixed)
+            }
             (Id::Opacity, V::Opacity(value)) => self.reset.opacity = value.0.clamp(0.0, 1.0),
             (Id::FlexDirection, V::FlexDirection(value)) => {
                 use keywords::FlexDirection as F;
@@ -751,12 +819,25 @@ impl Computer<'_> {
                                 specified::ContentItem::Attr(name) => ContentPart::Text(Arc::from(
                                     (self.context.attribute)(name).unwrap_or_default(),
                                 )),
-                                specified::ContentItem::OpenQuote => {
-                                    ContentPart::Text(Arc::from("\u{201C}"))
+                                specified::ContentItem::Url(url) => {
+                                    ContentPart::Image(Arc::from(&**url))
                                 }
-                                specified::ContentItem::CloseQuote => {
-                                    ContentPart::Text(Arc::from("\u{201D}"))
-                                }
+                                specified::ContentItem::OpenQuote => ContentPart::Quote {
+                                    open: true,
+                                    visible: true,
+                                },
+                                specified::ContentItem::CloseQuote => ContentPart::Quote {
+                                    open: false,
+                                    visible: true,
+                                },
+                                specified::ContentItem::NoOpenQuote => ContentPart::Quote {
+                                    open: true,
+                                    visible: false,
+                                },
+                                specified::ContentItem::NoCloseQuote => ContentPart::Quote {
+                                    open: false,
+                                    visible: false,
+                                },
                                 specified::ContentItem::Counter(name, style) => {
                                     ContentPart::Counter(Arc::from(&**name), list_style(style))
                                 }
@@ -767,7 +848,6 @@ impl Computer<'_> {
                                         list_style(style),
                                     )
                                 }
-                                _ => continue,
                             };
                             parts.push(part);
                         }
@@ -1072,7 +1152,9 @@ impl Computer<'_> {
         use LonghandId as Id;
         let (inherited, reset) = (&mut self.inherited, &mut self.reset);
         match id {
+            Id::TableLayout => reset.fixed_table = from_reset.fixed_table,
             Id::Display => {
+                reset.flow_root = from_reset.flow_root;
                 reset.display = from_reset.display;
                 reset.table_column = from_reset.table_column;
             }
@@ -1091,6 +1173,16 @@ impl Computer<'_> {
             Id::LineHeight => inherited.line_height = from_inherited.line_height,
             Id::TextAlign => inherited.text_align = from_inherited.text_align,
             Id::Direction => inherited.direction = from_inherited.direction,
+            Id::LetterSpacing => inherited.letter_spacing = from_inherited.letter_spacing,
+            Id::WordSpacing => inherited.word_spacing = from_inherited.word_spacing,
+            Id::TextIndent => inherited.text_indent = from_inherited.text_indent,
+            Id::TextTransform => inherited.text_transform = from_inherited.text_transform,
+            Id::TabSize => inherited.tab_size = from_inherited.tab_size,
+            Id::WordBreak => inherited.word_break = from_inherited.word_break,
+            Id::OverflowWrap => inherited.overflow_wrap = from_inherited.overflow_wrap,
+            Id::Quotes => inherited.quotes = from_inherited.quotes.clone(),
+            Id::CaptionSide => inherited.caption_bottom = from_inherited.caption_bottom,
+            Id::EmptyCells => inherited.hide_empty_cells = from_inherited.hide_empty_cells,
             Id::WhiteSpaceCollapse | Id::TextWrapMode => {
                 inherited.white_space = from_inherited.white_space
             }
@@ -1193,7 +1285,14 @@ impl Computer<'_> {
                 Display::InlineFlex => Display::Flex,
                 Display::InlineTable => Display::Table,
                 Display::InlineGrid => Display::Grid,
-                Display::Inline | Display::InlineBlock => Display::Block,
+                Display::Inline
+                | Display::InlineBlock
+                | Display::TableRowGroup
+                | Display::TableHeaderGroup
+                | Display::TableFooterGroup
+                | Display::TableRow
+                | Display::TableCell
+                | Display::TableCaption => Display::Block,
                 Display::Contents if self.context.root => Display::Block,
                 display => display,
             };

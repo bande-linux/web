@@ -55,6 +55,18 @@ pub enum Display {
 }
 
 impl Display {
+    pub fn is_table_part(self) -> bool {
+        matches!(
+            self,
+            Display::TableRowGroup
+                | Display::TableHeaderGroup
+                | Display::TableFooterGroup
+                | Display::TableRow
+                | Display::TableCell
+                | Display::TableCaption
+        )
+    }
+
     pub fn is_inline_level(self) -> bool {
         matches!(
             self,
@@ -166,6 +178,29 @@ pub enum TextAlign {
     Right,
     Center,
     Justify,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TextTransform {
+    None,
+    Capitalize,
+    Uppercase,
+    Lowercase,
+    FullWidth,
+    FullSizeKana,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum WordBreak {
+    Normal,
+    BreakAll,
+    KeepAll,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum TabSize {
+    Spaces(f32),
+    Px(f32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -291,6 +326,16 @@ pub struct InheritedStyle {
     pub white_space: WhiteSpace,
     pub direction: Direction,
     pub text_align: TextAlign,
+    pub letter_spacing: f32,
+    pub word_spacing: f32,
+    pub text_indent: LengthPercentage,
+    pub text_transform: TextTransform,
+    pub tab_size: TabSize,
+    pub word_break: WordBreak,
+    pub overflow_wrap: bool,
+    pub quotes: Arc<[(Arc<str>, Arc<str>)]>,
+    pub caption_bottom: bool,
+    pub hide_empty_cells: bool,
     pub list_style_type: ListStyleType,
     pub list_inside: bool,
     pub border_spacing: (f32, f32),
@@ -325,6 +370,8 @@ pub struct ResetStyle {
     pub clear: Clear,
     pub z_index: Option<i32>,
     pub clips: bool,
+    pub flow_root: bool,
+    pub fixed_table: bool,
     pub opacity: f32,
     pub flex_direction: FlexDirection,
     pub flex_wrap: bool,
@@ -350,6 +397,8 @@ pub struct ResetStyle {
 #[derive(Clone, PartialEq, Debug)]
 pub enum ContentPart {
     Text(Arc<str>),
+    Image(Arc<str>),
+    Quote { open: bool, visible: bool },
     Counter(Arc<str>, ListStyleType),
     Counters(Arc<str>, Arc<str>, ListStyleType),
 }
@@ -449,6 +498,13 @@ pub struct ComputedStyle {
 
 pub(crate) const MEDIUM: f32 = 16.0;
 
+fn default_quotes() -> Arc<[(Arc<str>, Arc<str>)]> {
+    Arc::new([
+        (Arc::from("\u{201C}"), Arc::from("\u{201D}")),
+        (Arc::from("\u{2018}"), Arc::from("\u{2019}")),
+    ])
+}
+
 impl InheritedStyle {
     pub(crate) fn initial() -> Self {
         InheritedStyle {
@@ -463,6 +519,16 @@ impl InheritedStyle {
             white_space: WhiteSpace::Normal,
             direction: Direction::Ltr,
             text_align: TextAlign::Start,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+            text_indent: LengthPercentage::ZERO,
+            text_transform: TextTransform::None,
+            tab_size: TabSize::Spaces(8.0),
+            word_break: WordBreak::Normal,
+            overflow_wrap: false,
+            quotes: default_quotes(),
+            caption_bottom: false,
+            hide_empty_cells: false,
             list_style_type: ListStyleType::Disc,
             list_inside: false,
             border_spacing: (0.0, 0.0),
@@ -500,6 +566,8 @@ impl ResetStyle {
             clear: Clear::None,
             z_index: None,
             clips: false,
+            flow_root: false,
+            fixed_table: false,
             opacity: 1.0,
             flex_direction: FlexDirection::Row,
             flex_wrap: false,

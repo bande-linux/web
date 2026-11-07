@@ -5,7 +5,7 @@ use web_style::{
     Clear, Color, ComputedStyle, Float, LengthPercentage, Position, Sides, TextAlign,
     TextDecorations,
 };
-use web_text::{AtomicSize, FontId, Fonts, Glyph, Lines};
+use web_text::{AtomicSize, FontId, Fonts, Glyph, LinePlacement, Lines};
 
 use crate::box_tree::{
     BlockBox, BoxTree, Contents, InlineContent, InlineFrame, InlineItem, ItemKind, is_rtl,
@@ -77,6 +77,7 @@ pub(crate) struct Sizing {
     pub(crate) height: Option<f32>,
     pub(crate) shrink: bool,
     pub(crate) root: bool,
+    pub(crate) auto_height: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -227,6 +228,7 @@ pub(crate) fn establishes_bfc(style: &ComputedStyle) -> bool {
     style.reset.float != Float::None
         || style.is_out_of_flow()
         || style.reset.clips
+        || style.reset.flow_root
         || matches!(
             style.display(),
             web_style::Display::InlineBlock
@@ -299,6 +301,39 @@ fn relative_offset(style: &ComputedStyle, cb: (f32, Option<f32>)) -> (f32, f32) 
     (x, y)
 }
 
+fn constrain_ratio(size: (f32, f32), width: (f32, f32), height: (f32, f32)) -> (f32, f32) {
+    let (w, h) = size;
+    let (min_w, max_w) = width;
+    let (min_h, max_h) = height;
+    let over_w = w > max_w;
+    let under_w = w < min_w;
+    let over_h = h > max_h;
+    let under_h = h < min_h;
+    match (over_w, under_w, over_h, under_h) {
+        (false, false, false, false) => (w, h),
+        (true, _, false, false) => (max_w, (max_w * h / w).max(min_h)),
+        (_, true, false, false) => (min_w, (min_w * h / w).min(max_h)),
+        (false, false, true, _) => ((max_h * w / h).max(min_w), max_h),
+        (false, false, _, true) => ((min_h * w / h).min(max_w), min_h),
+        (true, _, true, _) => {
+            if max_w / w <= max_h / h {
+                (max_w, (max_w * h / w).max(min_h))
+            } else {
+                ((max_h * w / h).max(min_w), max_h)
+            }
+        }
+        (_, true, _, true) => {
+            if min_w / w <= min_h / h {
+                ((min_h * w / h).min(max_w), min_h)
+            } else {
+                (min_w, (min_w * h / w).min(max_h))
+            }
+        }
+        (_, true, true, _) => (min_w, max_h),
+        (true, _, _, true) => (max_w, min_h),
+    }
+}
+
 fn resolve_height(value: LengthPercentage, cb: Option<f32>) -> Option<f32> {
     match cb {
         Some(height) => Some(value.resolve(height)),
@@ -339,43 +374,69 @@ impl<'a, 'b> Flow<'a, 'b> {
                 value
             }
         };
-        let width = reset
+        let specified_width = reset
             .width
             .map(|width| border_box(width.resolve(cb.0), frame.0));
-        let height = reset
+        let specified_height = reset
             .height
             .and_then(|height| resolve_height(height, cb.1))
             .map(|height| border_box(height, frame.1));
         let ratio = natural
             .filter(|(w, h)| *w > 0.0 && *h > 0.0)
             .map(|(w, h)| h / w);
-        let (mut width, mut height) = match (width, height, natural) {
+        let (width, height) = match (specified_width, specified_height, natural) {
             (Some(width), Some(height), _) => (width, height),
-            (Some(width), None, _) => (width, ratio.map_or(150.0 * 0.5, |ratio| width * ratio)),
+            (Some(width), None, _) => (width, ratio.map_or(150.0, |ratio| width * ratio)),
             (None, Some(height), _) => (ratio.map_or(300.0, |ratio| height / ratio), height),
             (None, None, Some(natural)) => natural,
             (None, None, None) => (0.0, 0.0),
         };
-        if let Some(maximum) = reset
+        let min_width = border_box(reset.min_width.resolve(cb.0), frame.0);
+        let max_width = reset
             .max_width
-            .map(|max| border_box(max.resolve(cb.0), frame.0))
-            && width > maximum
-        {
-            if let Some(ratio) = ratio
-                && reset.height.is_none()
-            {
-                height = maximum * ratio;
-            }
-            width = maximum;
+            .map_or(f32::INFINITY, |max| border_box(max.resolve(cb.0), frame.0))
+            .max(min_width);
+        let min_height = border_box(reset.min_height.resolve(cb.1.unwrap_or(0.0)), frame.1);
+        let max_height = reset
+            .max_height
+            .and_then(|max| resolve_height(max, cb.1))
+            .map_or(f32::INFINITY, |max| border_box(max, frame.1))
+            .max(min_height);
+        let free_ratio = specified_width.is_none() && specified_height.is_none();
+        match ratio.filter(|_| free_ratio && width > 0.0 && height > 0.0) {
+            Some(_) => constrain_ratio(
+                (width, height),
+                (min_width, max_width),
+                (min_height, max_height),
+            ),
+            None => match ratio {
+                Some(ratio) if specified_width.is_some() && specified_height.is_none() => {
+                    let clamped = width.clamp(min_width, max_width);
+                    (
+                        clamped,
+                        (clamped * ratio).clamp(min_height, max_height),
+                    )
+                }
+                Some(ratio) if specified_height.is_some() && specified_width.is_none() => {
+                    let clamped = height.clamp(min_height, max_height);
+                    (
+                        (clamped / ratio).clamp(min_width, max_width),
+                        clamped,
+                    )
+                }
+                _ => (
+                    width.clamp(min_width, max_width),
+                    height.clamp(min_height, max_height),
+                ),
+            },
         }
-        (width.max(0.0), height.max(0.0))
     }
 
     pub(crate) fn block(
         &mut self,
         block: &'b BlockBox,
         cb: (f32, Option<f32>),
-        origin: (f32, f32),
+        mut origin: (f32, f32),
         bfc: &mut Bfc,
         sizing: Sizing,
     ) -> Laid {
@@ -405,7 +466,14 @@ impl<'a, 'b> Flow<'a, 'b> {
                 width
             }
         });
-        let minimum = reset.min_width.resolve(cb.0);
+        let minimum = {
+            let width = reset.min_width.resolve(cb.0);
+            if reset.border_box {
+                (width - frame).max(0.0)
+            } else {
+                width
+            }
+        };
         let available =
             (cb.0 - margin_left.unwrap_or(0.0) - margin_right.unwrap_or(0.0) - frame).max(0.0);
         let mut content_width = match (sizing.width, replaced_size, specified) {
@@ -424,6 +492,13 @@ impl<'a, 'b> Flow<'a, 'b> {
             }
             content_width = content_width.max(minimum);
         }
+        if sizing.width.is_none()
+            && let Contents::Table(_) = &block.contents
+            && !reset.fixed_table
+        {
+            let (min, _) = self.intrinsic_content(block, cb);
+            content_width = content_width.max(min);
+        }
         content_width = content_width.max(0.0);
         if !sizing.shrink && sizing.width.is_none() {
             let rest = cb.0 - content_width - frame;
@@ -434,6 +509,7 @@ impl<'a, 'b> Flow<'a, 'b> {
                 }
                 (None, Some(right)) => margin_left = Some(rest - right),
                 (Some(left), None) => margin_right = Some(rest - left),
+                (Some(_), Some(right)) if style.is_rtl() => margin_left = Some(rest - right),
                 (Some(_), Some(_)) => {}
             }
         }
@@ -443,7 +519,14 @@ impl<'a, 'b> Flow<'a, 'b> {
             bottom: margins.bottom.unwrap_or(0.0),
             left: margin_left.unwrap_or(0.0),
         };
-        let width = content_width + frame;
+        let mut width = content_width + frame;
+        let (top_captions, captions_above) = match &block.contents {
+            Contents::Table(table) if !table.captions.is_empty() => {
+                self.captions(table, false, width, origin)
+            }
+            _ => (Vec::new(), 0.0),
+        };
+        origin.1 += captions_above;
         let content_x = border.left + padding.left;
         let content_y = border.top + padding.top;
         let border_origin = (origin.0 + margin.left, origin.1);
@@ -453,20 +536,32 @@ impl<'a, 'b> Flow<'a, 'b> {
         let bfc: &mut Bfc = if new_bfc { &mut own_bfc } else { bfc };
         let positioned = sizing.root || style.is_positioned();
         let mark = self.absolutes.len();
+        let adjust_height = |height: f32| {
+            if reset.border_box {
+                (height - vertical_frame).max(0.0)
+            } else {
+                height
+            }
+        };
+        let min_height = adjust_height(reset.min_height.resolve(cb.1.unwrap_or(0.0)));
+        let max_height = reset
+            .max_height
+            .and_then(|max| resolve_height(max, cb.1))
+            .map(adjust_height);
+        let clamp_height = |height: f32| {
+            max_height
+                .map_or(height, |maximum| height.min(maximum))
+                .max(min_height)
+        };
         let specified_height = sizing
             .height
             .map(|height| (height - vertical_frame).max(0.0))
             .or_else(|| {
                 reset
                     .height
+                    .filter(|_| !sizing.auto_height)
                     .and_then(|height| resolve_height(height, cb.1))
-                    .map(|height| {
-                        if reset.border_box {
-                            (height - vertical_frame).max(0.0)
-                        } else {
-                            height
-                        }
-                    })
+                    .map(|height| clamp_height(adjust_height(height)))
             });
         let children_height = specified_height;
         let top_adjoins = !new_bfc && border.top == 0.0 && padding.top == 0.0;
@@ -625,14 +720,16 @@ impl<'a, 'b> Flow<'a, 'b> {
                 through = false;
             }
             Contents::Table(table) => {
-                y = self.table(
+                let (height, grid_width) = self.table(
                     block,
                     table,
-                    content_width,
+                    (content_width, specified_height),
                     content_origin,
                     (content_x, content_y),
                     &mut children,
                 );
+                y = height;
+                width = width.max(grid_width + frame);
                 through = false;
             }
         }
@@ -643,9 +740,8 @@ impl<'a, 'b> Flow<'a, 'b> {
             if new_bfc && !sizing.root {
                 y = y.max(bfc.bottom() - content_origin.1);
             }
-            y = y.max(reset.min_height.resolve(cb.1.unwrap_or(0.0)));
-            if let Some(maximum) = reset.max_height.and_then(|max| resolve_height(max, cb.1)) {
-                y = y.min(maximum);
+            if !sizing.auto_height {
+                y = clamp_height(y);
             }
         }
         let bottom = if through {
@@ -704,8 +800,76 @@ impl<'a, 'b> Flow<'a, 'b> {
                 children.push(Fragment::Box(fragment));
             }
         }
-        Laid {
-            fragment: BoxFragment {
+        let visible = style.inherited.visible;
+        let box_extra = |layered: Layer| {
+            extra(
+                if visible { border } else { Sides::default() },
+                reset.border_color,
+                layered,
+                match &block.contents {
+                    Contents::Replaced(source) => source.clone().filter(|_| visible),
+                    _ => None,
+                },
+                reset.background_image.clone().filter(|_| visible),
+            )
+            .map(|mut extra| {
+                extra.padding = padding;
+                extra.background = reset.background;
+                extra
+            })
+        };
+        let background = if visible {
+            reset.background_color
+        } else {
+            Color::TRANSPARENT
+        };
+        let fragment = match &block.contents {
+            Contents::Table(table) if !table.captions.is_empty() => {
+                let (bottom_captions, captions_below) = self.captions(
+                    table,
+                    true,
+                    width,
+                    (origin.0, origin.1 + height),
+                );
+                let mut outer = top_captions;
+                outer.push(Fragment::Box(BoxFragment {
+                    node: None,
+                    rect: Rect {
+                        x: 0.0,
+                        y: captions_above,
+                        width,
+                        height,
+                    },
+                    background,
+                    extra: box_extra(Layer::FLOW),
+                    children,
+                }));
+                for mut caption in bottom_captions {
+                    if let Fragment::Box(caption) = &mut caption {
+                        caption.rect.y += captions_above + height;
+                    }
+                    outer.push(caption);
+                }
+                BoxFragment {
+                    node: block.node,
+                    rect: Rect {
+                        x: margin.left,
+                        y: 0.0,
+                        width,
+                        height: captions_above + height + captions_below,
+                    },
+                    background: Color::TRANSPARENT,
+                    extra: extra(
+                        Sides::default(),
+                        reset.border_color,
+                        layer(style),
+                        None,
+                        None,
+                    ),
+                    children: outer,
+                }
+            }
+            _ => BoxFragment {
                 node: block.node,
                 rect: Rect {
                     x: margin.left,
@@ -713,30 +877,32 @@ impl<'a, 'b> Flow<'a, 'b> {
                     width,
                     height,
                 },
-                background: reset.background_color,
-                extra: extra(
-                    border,
-                    reset.border_color,
-                    layer(style),
-                    match &block.contents {
-                        Contents::Replaced(source) => source.clone(),
-                        _ => None,
-                    },
-                    reset.background_image.clone(),
-                )
-                .map(|mut extra| {
-                    extra.padding = padding;
-                    extra.background = reset.background;
-                    extra
-                }),
+                background,
+                extra: box_extra(layer(style)),
                 children,
             },
+        };
+        Laid {
+            fragment,
             top,
             bottom,
             through,
             baseline,
             margin,
         }
+    }
+
+    fn float_box(&mut self, child: &'b BlockBox, cb: (f32, Option<f32>), at: (f32, f32)) -> Laid {
+        self.block(
+            child,
+            cb,
+            at,
+            &mut Bfc::default(),
+            Sizing {
+                shrink: true,
+                ..Sizing::default()
+            },
+        )
     }
 
     fn float(
@@ -748,24 +914,12 @@ impl<'a, 'b> Flow<'a, 'b> {
         edges: (f32, f32),
         parent_origin: (f32, f32),
     ) -> BoxFragment {
-        let laid = self.block(
-            child,
-            cb,
-            (edges.0, top),
-            &mut Bfc::default(),
-            Sizing {
-                shrink: true,
-                ..Sizing::default()
-            },
-        );
+        let laid = self.float_box(child, cb, (edges.0, top));
         let size = laid.outer();
         let left = child.style.reset.float == Float::Left;
+        let top = top.max(bfc.clearance(child.style.reset.clear));
         let (x, y) = bfc.place(size, left, top, edges);
-        let (dx, dy) = relative_offset(&child.style, cb);
-        let mut fragment = laid.fragment;
-        fragment.rect.x = x + laid.margin.left - parent_origin.0 + dx;
-        fragment.rect.y = y + laid.margin.top - parent_origin.1 + dy;
-        fragment
+        place_float(laid, &child.style, cb, (x, y), parent_origin)
     }
 
     fn absolute(&mut self, absolute: &Absolute<'b>, cb: (f32, f32, f32, f32)) -> BoxFragment {
@@ -799,7 +953,7 @@ impl<'a, 'b> Flow<'a, 'b> {
                 width: stretch_width,
                 height: stretch_height,
                 shrink: true,
-                root: false,
+                ..Sizing::default()
             },
         );
         let (outer_width, outer_height) = laid.outer();
@@ -871,25 +1025,14 @@ impl<'a, 'b> Flow<'a, 'b> {
         bfc: &mut Bfc,
         children: &mut Vec<Fragment>,
     ) -> (f32, Option<f32>) {
-        for child in &inline.out_of_flow {
-            if child.style.is_out_of_flow() {
-                self.absolutes.push(Absolute {
-                    block: child,
-                    x: origin.0,
-                    y: origin.1,
-                });
-            } else {
-                let fragment = self.float(
-                    child,
-                    (width, None),
-                    origin.1,
-                    bfc,
-                    (origin.0, origin.0 + width),
-                    border_origin,
-                );
-                children.push(Fragment::Box(fragment));
-            }
-        }
+        let mut floats: Vec<Option<Laid>> = inline
+            .out_of_flow
+            .iter()
+            .map(|child| {
+                (!child.style.is_out_of_flow())
+                    .then(|| self.float_box(child, (width, None), origin))
+            })
+            .collect();
         let mut atomics: Vec<(Laid, AtomicSize)> = Vec::new();
         for atomic in &inline.atomics {
             let laid = self.block(
@@ -917,17 +1060,54 @@ impl<'a, 'b> Flow<'a, 'b> {
         let sizes: Vec<AtomicSize> = atomics.iter().map(|(_, size)| *size).collect();
         let strut = run_style(self.fonts, &block.style, u32::MAX, 0.0);
         let line_estimate = strut.line_height.unwrap_or(strut.size * 1.2);
+        let mut placement = FloatPlacement {
+            bfc,
+            origin,
+            width,
+            line_estimate,
+            boxes: &inline.out_of_flow,
+            floats: &floats,
+            placed: vec![None; floats.len()],
+        };
         let lines = inline.shaped.lines(
             self.fonts,
-            &mut |top| {
-                let (left, right) =
-                    bfc.space(origin.1 + top, line_estimate, origin.0, origin.0 + width);
-                (left - origin.0, (right - left).max(0.0))
-            },
+            &mut placement,
             strut,
             block.style.inherited.text_align == TextAlign::Justify,
+            block.style.inherited.text_indent.resolve(width),
             &sizes,
         );
+        let placed = std::mem::take(&mut placement.placed);
+        for (index, position) in placed.into_iter().enumerate() {
+            if let (Some(position), Some(laid), Some(child)) = (
+                position,
+                floats.get_mut(index).and_then(Option::take),
+                inline.out_of_flow.get(index),
+            ) {
+                children.push(Fragment::Box(place_float(
+                    laid,
+                    &child.style,
+                    (width, None),
+                    position,
+                    border_origin,
+                )));
+            }
+        }
+        for &(tag, height) in &lines.empty_anchors {
+            if let Some(InlineItem {
+                kind: ItemKind::Anchor(index),
+                ..
+            }) = inline.items.get(tag as usize)
+                && let Some(child) = inline.out_of_flow.get(usize::from(*index))
+                && child.style.is_out_of_flow()
+            {
+                self.absolutes.push(Absolute {
+                    block: child,
+                    x: origin.0,
+                    y: origin.1 + height,
+                });
+            }
+        }
         if lines.lines.is_empty() {
             return (0.0, None);
         }
@@ -939,20 +1119,26 @@ impl<'a, 'b> Flow<'a, 'b> {
             align => align,
         };
         let mut atomics: Vec<Option<(Laid, AtomicSize)>> = atomics.into_iter().map(Some).collect();
-        self.lines(inline, &lines, offset, align, &mut atomics, children);
+        self.lines(inline, &lines, offset, origin, align, &mut atomics, children);
         let last = lines.lines.last().map(|line| line.baseline);
         (lines.height, last)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn lines(
         &mut self,
-        inline: &InlineContent,
+        inline: &'b InlineContent,
         lines: &Lines,
         origin: (f32, f32),
+        absolute: (f32, f32),
         align: TextAlign,
         atomics: &mut [Option<(Laid, AtomicSize)>],
         children: &mut Vec<Fragment>,
     ) {
+        let positioned = inline
+            .items
+            .iter()
+            .any(|item| item.style.is_positioned() && item.kind == ItemKind::Start);
         for line in &lines.lines {
             let free = (line.available - line.width).max(0.0);
             let offset = line.left
@@ -969,7 +1155,21 @@ impl<'a, 'b> Flow<'a, 'b> {
                 };
                 let x = origin.0 + offset + item.x;
                 let (mut current, edge) = match source.kind {
-                    ItemKind::Text | ItemKind::Atomic(_) => (source.parent, None),
+                    ItemKind::Anchor(index) => {
+                        if let Some(child) = inline.out_of_flow.get(usize::from(index))
+                            && child.style.is_out_of_flow()
+                        {
+                            self.absolutes.push(Absolute {
+                                block: child,
+                                x: absolute.0 + offset + item.x,
+                                y: absolute.1 + line.top,
+                            });
+                        }
+                        continue;
+                    }
+                    ItemKind::Text | ItemKind::Atomic(_) | ItemKind::Resume => {
+                        (source.parent, None)
+                    }
                     ItemKind::Start => (Some(item.tag), Some((item.tag, true))),
                     ItemKind::End(start) => (Some(start), Some((start, false))),
                 };
@@ -1016,27 +1216,34 @@ impl<'a, 'b> Flow<'a, 'b> {
             extents.sort_by_key(|extent| extent.depth);
             for extent in &extents {
                 if let Some(source) = inline.items.get(extent.tag as usize) {
-                    children.push(Fragment::Box(self.inline_box(
-                        source,
-                        extent,
-                        origin.1 + line.baseline,
-                    )));
+                    let mut fragment = self.inline_box(source, extent, origin.1 + line.baseline);
+                    if positioned {
+                        let (dx, dy) = inline_offset(inline, Some(extent.tag), line.available);
+                        fragment.rect.x += dx;
+                        fragment.rect.y += dy;
+                    }
+                    children.push(Fragment::Box(fragment));
                 }
             }
             for item in items {
                 let Some(source) = inline.items.get(item.tag as usize) else {
                     continue;
                 };
-                let baseline = origin.1 + line.baseline - item.baseline_shift;
-                let x = origin.0 + offset + item.x;
+                let (dx, dy) = if positioned {
+                    inline_offset(inline, source.parent, line.available)
+                } else {
+                    (0.0, 0.0)
+                };
+                let baseline = origin.1 + line.baseline - item.baseline_shift + dy;
+                let x = origin.0 + offset + item.x + dx;
                 if let ItemKind::Atomic(index) = source.kind {
                     if let Some((laid, size)) =
                         atomics.get_mut(usize::from(index)).and_then(Option::take)
                     {
-                        let (dx, dy) = relative_offset(&source.style, (line.available, None));
+                        let (rx, ry) = relative_offset(&source.style, (line.available, None));
                         let mut fragment = laid.fragment;
-                        fragment.rect.x = x + laid.margin.left + dx;
-                        fragment.rect.y = baseline - size.ascent + laid.margin.top + dy;
+                        fragment.rect.x = x + laid.margin.left + rx;
+                        fragment.rect.y = baseline - size.ascent + laid.margin.top + ry;
                         children.push(Fragment::Box(fragment));
                     }
                     continue;
@@ -1149,10 +1356,9 @@ impl<'a, 'b> Flow<'a, 'b> {
         children: &mut Vec<Fragment>,
     ) {
         let strut = run_style(self.fonts, &block.style, 0, 0.0);
-        let lines =
-            marker
-                .shaped
-                .lines(self.fonts, &mut |_| (0.0, f32::INFINITY), strut, false, &[]);
+        let lines = marker
+            .shaped
+            .lines(self.fonts, &mut Unbounded, strut, false, 0.0, &[]);
         let Some(line) = lines.lines.first() else {
             return;
         };
@@ -1188,6 +1394,121 @@ impl<'a, 'b> Flow<'a, 'b> {
             }));
         }
     }
+}
+
+struct Unbounded;
+
+impl LinePlacement for Unbounded {
+    fn space(&mut self, _top: f32) -> (f32, f32) {
+        (0.0, f32::INFINITY)
+    }
+
+    fn is_float(&self, _anchor: u16) -> bool {
+        false
+    }
+
+    fn place(
+        &mut self,
+        _anchor: u16,
+        _top: f32,
+        _used: f32,
+        _has_content: bool,
+    ) -> Option<(f32, f32)> {
+        None
+    }
+
+    fn place_below(&mut self, _anchor: u16, _top: f32) {}
+}
+
+struct FloatPlacement<'p, 'b> {
+    bfc: &'p mut Bfc,
+    origin: (f32, f32),
+    width: f32,
+    line_estimate: f32,
+    boxes: &'b [BlockBox],
+    floats: &'p [Option<Laid>],
+    placed: Vec<Option<(f32, f32)>>,
+}
+
+impl FloatPlacement<'_, '_> {
+    fn edges(&self) -> (f32, f32) {
+        (self.origin.0, self.origin.0 + self.width)
+    }
+
+    fn put(&mut self, anchor: u16, y: f32) {
+        let index = usize::from(anchor);
+        let (Some(Some(laid)), Some(child)) = (self.floats.get(index), self.boxes.get(index))
+        else {
+            return;
+        };
+        let y = y.max(self.bfc.clearance(child.style.reset.clear));
+        let position = self.bfc.place(
+            laid.outer(),
+            child.style.reset.float == Float::Left,
+            y,
+            self.edges(),
+        );
+        if let Some(slot) = self.placed.get_mut(index) {
+            *slot = Some(position);
+        }
+    }
+}
+
+impl LinePlacement for FloatPlacement<'_, '_> {
+    fn space(&mut self, top: f32) -> (f32, f32) {
+        let (start, end) = self.edges();
+        let (left, right) = self
+            .bfc
+            .space(self.origin.1 + top, self.line_estimate, start, end);
+        (left - self.origin.0, (right - left).max(0.0))
+    }
+
+    fn is_float(&self, anchor: u16) -> bool {
+        matches!(self.floats.get(usize::from(anchor)), Some(Some(_)))
+    }
+
+    fn place(&mut self, anchor: u16, top: f32, used: f32, has_content: bool) -> Option<(f32, f32)> {
+        let index = usize::from(anchor);
+        let laid = self.floats.get(index)?.as_ref()?;
+        let (outer_width, outer_height) = laid.outer();
+        let y = self.origin.1 + top;
+        let (start, end) = self.edges();
+        let (left, right) = self.bfc.space(y, outer_height, start, end);
+        if has_content && right - left - used < outer_width {
+            return None;
+        }
+        self.put(anchor, y);
+        Some(self.space(top))
+    }
+
+    fn place_below(&mut self, anchor: u16, top: f32) {
+        self.put(anchor, self.origin.1 + top);
+    }
+}
+
+fn place_float(
+    laid: Laid,
+    style: &ComputedStyle,
+    cb: (f32, Option<f32>),
+    position: (f32, f32),
+    parent_origin: (f32, f32),
+) -> BoxFragment {
+    let (dx, dy) = relative_offset(style, cb);
+    let margin = laid.margin;
+    let mut fragment = laid.fragment;
+    fragment.rect.x = position.0 + margin.left - parent_origin.0 + dx;
+    fragment.rect.y = position.1 + margin.top - parent_origin.1 + dy;
+    fragment
+}
+
+fn inline_offset(inline: &InlineContent, mut tag: Option<u32>, width: f32) -> (f32, f32) {
+    let mut total = (0.0, 0.0);
+    while let Some(item) = tag.and_then(|tag| inline.items.get(tag as usize)) {
+        let (dx, dy) = relative_offset(&item.style, (width, None));
+        total = (total.0 + dx, total.1 + dy);
+        tag = item.parent;
+    }
+    total
 }
 
 fn leading_margins(block: &BlockBox, width: f32) -> Margins {
@@ -1227,7 +1548,7 @@ fn keep_empty(laid: Laid, at: (f32, f32), children: &mut Vec<Fragment>) {
     children.push(Fragment::Box(fragment));
 }
 
-fn first_baseline(children: &[Fragment]) -> Option<f32> {
+pub(crate) fn first_baseline(children: &[Fragment]) -> Option<f32> {
     children.iter().find_map(|child| match child {
         Fragment::Text(text) => Some(text.baseline),
         Fragment::Box(fragment) => {

@@ -28,12 +28,7 @@ pub const WPT: Source = Source {
     commit: "5197f4e83e1e5a0e02c85f8600c11ae9c0433769",
     paths: &[
         "/html/syntax/parsing/resources/",
-        "/css/CSS2/",
-        "/css/css-cascade/",
-        "/css/css-syntax/",
-        "/css/selectors/",
-        "/css/reference/",
-        "/css/support/",
+        "/css/",
         "/fonts/",
         "/images/",
     ],

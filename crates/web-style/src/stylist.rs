@@ -349,7 +349,7 @@ impl Builder<'_> {
         }
         if matches!(
             selector.pseudo_element,
-            Some(PseudoElement::Before | PseudoElement::After)
+            Some(PseudoElement::Before | PseudoElement::After | PseudoElement::FirstLetter)
         ) {
             self.stylist.pseudos = true;
         }

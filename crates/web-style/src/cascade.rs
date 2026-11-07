@@ -27,6 +27,7 @@ pub struct Restyle {
 pub enum Pseudo {
     Before,
     After,
+    FirstLetter,
 }
 
 pub struct Styles {
@@ -202,13 +203,19 @@ impl Styles {
         for (pseudo, selector) in [
             (Pseudo::Before, web_css::selectors::PseudoElement::Before),
             (Pseudo::After, web_css::selectors::PseudoElement::After),
+            (
+                Pseudo::FirstLetter,
+                web_css::selectors::PseudoElement::FirstLetter,
+            ),
         ] {
             let matched = traversal.matched_pseudo(element, selector);
             if matched.is_empty() {
                 continue;
             }
             let style = traversal.style(element, &matched, &[], &parent, &self.initial_reset);
-            if style.reset.content.is_some() && style.display() != Display::None {
+            if (pseudo == Pseudo::FirstLetter || style.reset.content.is_some())
+                && style.display() != Display::None
+            {
                 let pseudo_index = self.intern(style, index, &parent);
                 self.pseudos.insert((element, pseudo), pseudo_index);
             }
@@ -220,6 +227,12 @@ impl Styles {
             inherited: parent.inherited.clone(),
             reset: self.initial_reset.clone(),
         }
+    }
+
+    pub fn anonymous_box(&self, parent: &ComputedStyle, display: Display) -> ComputedStyle {
+        let mut style = self.anonymous(parent);
+        Arc::make_mut(&mut style.reset).display = display;
+        style
     }
 
     pub fn distinct(&self) -> usize {

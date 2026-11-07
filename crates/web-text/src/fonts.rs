@@ -51,8 +51,8 @@ pub struct Fonts {
     primary: HashMap<FontKey, Option<FontId>>,
     chosen: HashMap<(FontKey, char), Option<FontId>>,
     names: Vec<Arc<[Arc<str>]>>,
-    plans: HashMap<(FontId, harfrust::Script, bool), harfrust::ShapePlan>,
-    words: HashMap<(FontId, u32, bool), WordCache>,
+    plans: HashMap<(FontId, harfrust::Script, bool, bool), harfrust::ShapePlan>,
+    words: HashMap<(FontId, u32, bool, bool), WordCache>,
     cached_bytes: usize,
     buffer: Option<UnicodeBuffer>,
     scope: u32,
@@ -254,14 +254,14 @@ impl Fonts {
                 *slot = None;
             }
         }
-        self.words.retain(|(font, _, _), _| !fonts.contains(font));
+        self.words.retain(|(font, _, _, _), _| !fonts.contains(font));
         self.cached_bytes = self
             .words
             .values()
             .flat_map(|cache| cache.iter())
             .map(|(word, shaped)| shaped.bytes(word))
             .sum();
-        self.plans.retain(|(font, _, _), _| !fonts.contains(font));
+        self.plans.retain(|(font, _, _, _), _| !fonts.contains(font));
         self.primary.clear();
         self.chosen.clear();
     }
@@ -285,15 +285,16 @@ impl Fonts {
         font: FontId,
         size: f32,
         rtl: bool,
+        spaced: bool,
         word: &str,
         sink: &mut dyn FnMut(WordGlyph, (f32, f32)),
     ) -> bool {
-        let key = (font, size.to_bits(), rtl);
+        let key = (font, size.to_bits(), rtl, spaced);
         if let Some(shaped) = self.words.get(&key).and_then(|words| words.get(word)) {
             shaped.emit(sink);
             return true;
         }
-        let Some(shaped) = self.shape_uncached(font, size, rtl, word) else {
+        let Some(shaped) = self.shape_uncached(font, size, rtl, spaced, word) else {
             return false;
         };
         shaped.emit(sink);
@@ -317,6 +318,7 @@ impl Fonts {
         font: FontId,
         size: f32,
         rtl: bool,
+        spaced: bool,
         word: &str,
     ) -> Option<ShapedWord> {
         let loaded = self.loaded.get(font.0 as usize)?.as_ref()?;
@@ -333,8 +335,16 @@ impl Fonts {
         });
         buffer.set_cluster_level(BufferClusterLevel::MonotoneCharacters);
         let script = buffer.script();
-        let plan = self.plans.entry((font, script, rtl)).or_insert_with(|| {
-            harfrust::ShapePlan::new(&shaper, buffer.direction(), Some(script), None, &[])
+        let plan = self.plans.entry((font, script, rtl, spaced)).or_insert_with(|| {
+            let features = if spaced {
+                vec![
+                    harfrust::Feature::new(harfrust::Tag::new(b"liga"), 0, ..),
+                    harfrust::Feature::new(harfrust::Tag::new(b"clig"), 0, ..),
+                ]
+            } else {
+                Vec::new()
+            };
+            harfrust::ShapePlan::new(&shaper, buffer.direction(), Some(script), None, &features)
         });
         let output = shaper.shape(
             buffer,

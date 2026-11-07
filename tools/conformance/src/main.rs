@@ -18,6 +18,7 @@ const SUITES: [&str; 4] = [
 ];
 
 const USAGE: &str = "usage: conformance [--failures] [--summary FILE] [--baseline FILE] [SUITE...]
+       conformance --dump DIRECTORY TEST...
 suites: html5lib-tokenizer html5lib-tree css-parsing wpt-reftests (default: all)";
 
 fn main() -> ExitCode {
@@ -42,6 +43,11 @@ fn run() -> Result<bool, String> {
             "--failures" => failures = true,
             "--summary" => summary = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             "--baseline" => baseline = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
+            "--dump" => {
+                let directory = PathBuf::from(args.next().ok_or(USAGE)?);
+                let tests: Vec<PathBuf> = args.by_ref().map(PathBuf::from).collect();
+                return reftest::dump(&source::WPT.checkout()?, &directory, &tests).map(|()| true);
+            }
             suite if SUITES.contains(&suite) => suites.push(arg),
             _ => return Err(USAGE.to_owned()),
         }
@@ -49,7 +55,11 @@ fn run() -> Result<bool, String> {
     if suites.is_empty() {
         suites = SUITES.map(String::from).into();
     }
-    std::panic::set_hook(Box::new(|_| {}));
+    std::panic::set_hook(Box::new(move |info| {
+        if failures {
+            eprintln!("panic: {info}");
+        }
+    }));
     let mut tallies = Vec::new();
     for suite in &suites {
         let results = match suite.as_str() {
