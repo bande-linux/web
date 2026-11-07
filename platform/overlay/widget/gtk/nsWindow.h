@@ -186,7 +186,6 @@ class nsWindow final : public nsIWidget {
       nullptr;
   RefPtr<mozilla::WaylandVsyncSource> mVsyncSource;
   RefPtr<mozilla::VsyncDispatcher> mVsyncDispatcher;
-  mozilla::UniquePtr<mozilla::Mutex> mCompositorVsyncDispatcherLock;
   uint16_t mPressedButtons = 0;
   bool mVisible = false;
   bool mEnabled = true;
