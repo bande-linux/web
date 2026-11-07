@@ -30,6 +30,8 @@ enum class BandeEventKind : uint32_t {
   FdReady = 14,
   ClipboardData = 15,
   ClipboardChanged = 16,
+  PopupMoved = 17,
+  PopupDismissed = 18,
 };
 
 enum BandeModifier : uint32_t {
@@ -73,6 +75,10 @@ class BandeHost final {
 
   static uint64_t Open(const char* aTitle, const char* aAppId, uint32_t aWidth,
                        uint32_t aHeight);
+  static uint64_t OpenPopup(uint64_t aParent, double aX, double aY,
+                            double aWidth, double aHeight, bool aGrab);
+  static void MovePopup(uint64_t aWindow, double aX, double aY, double aWidth,
+                        double aHeight);
   static void Close(uint64_t aWindow);
   static wl_surface* Surface(uint64_t aWindow);
   static void SetTitle(uint64_t aWindow, const char* aTitle);

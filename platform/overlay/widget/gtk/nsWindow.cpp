@@ -6,6 +6,7 @@
 
 #include "BandeKeys.h"
 #include "NativeKeyBindings.h"
+#include "nsIRollupListener.h"
 #include "GtkCompositorWidget.h"
 #include "ScreenHelperBande.h"
 #include "WaylandVsyncSource.h"
@@ -92,6 +93,8 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
                           const InitData& aInitData) {
   BaseCreate(aParent, aInitData);
   mBounds = aRect;
+  mGrabs = mWindowType == WindowType::Popup &&
+           aInitData.mPopupHint == PopupType::Menu;
   ScreenHelperBande::EnsureStarted();
   mContainer.mSurface = new WaylandSurface();
   mContainer.mSurface->Init();
@@ -194,6 +197,48 @@ bool nsWindow::MapSurfaceLocked(WaylandSurfaceLock& lock) {
   return true;
 }
 
+nsWindow* nsWindow::ParentWindow() const {
+  return static_cast<nsWindow*>(mParent);
+}
+
+LayoutDeviceIntPoint nsWindow::ParentOrigin() const {
+  nsWindow* parent = ParentWindow();
+  return parent ? parent->WidgetToScreenOffset() : LayoutDeviceIntPoint();
+}
+
+LayoutDeviceIntPoint nsWindow::WidgetToScreenOffset() {
+  return IsPopup() ? mBounds.TopLeft() : LayoutDeviceIntPoint();
+}
+
+void nsWindow::MapPopup() {
+  nsWindow* parent = ParentWindow();
+  while (parent && !parent->mBandeWindow) {
+    parent = parent->ParentWindow();
+  }
+  if (!parent) {
+    return;
+  }
+  double scale = FractionalScaleFactor();
+  LayoutDeviceIntPoint position = mBounds.TopLeft() - parent->WidgetToScreenOffset();
+  mBandeWindow = BandeHost::OpenPopup(
+      parent->mBandeWindow, position.x / scale, position.y / scale,
+      mBounds.width / scale, mBounds.height / scale, mGrabs);
+  if (!mBandeWindow) {
+    return;
+  }
+  LiveWindows().InsertOrUpdate(mBandeWindow, this);
+  WaylandSurface* surface = mContainer.mSurface;
+  {
+    WaylandSurfaceLock lock(surface);
+    surface->SetParentLocked(lock, parent->mContainer.mSurface);
+    if (!MapSurfaceLocked(lock)) {
+      return;
+    }
+  }
+  surface->SetSize(DesktopIntSize(int32_t(mBounds.width / scale),
+                                  int32_t(mBounds.height / scale)));
+}
+
 void nsWindow::UnmapToplevel() {
   if (!mBandeWindow) {
     return;
@@ -214,11 +259,16 @@ void nsWindow::Show(bool aState) {
     return;
   }
   mVisible = aState;
-  if (!BandeHost::IsActive() || mWindowType != WindowType::TopLevel) {
+  if (!BandeHost::IsActive() ||
+      (mWindowType != WindowType::TopLevel && mWindowType != WindowType::Popup)) {
     return;
   }
   if (aState) {
-    MapToplevel();
+    if (IsPopup()) {
+      MapPopup();
+    } else {
+      MapToplevel();
+    }
     Paint();
   } else {
     UnmapToplevel();
@@ -236,7 +286,7 @@ void nsWindow::Paint() {
   WindowRenderer* renderer = GetWindowRenderer();
   if (renderer) {
     if (WebRenderLayerManager* layerManager = renderer->AsWebRender()) {
-      if (!mConfiguredClearColor) {
+      if (!mConfiguredClearColor && !IsPopup()) {
         layerManager->WrBridge()->SendSetDefaultClearColor(LookAndFeel::Color(
             LookAndFeel::ColorID::Window,
             PreferenceSheet::ColorSchemeForChrome(),
@@ -259,6 +309,12 @@ void nsWindow::Invalidate(const LayoutDeviceIntRect&) {
 void nsWindow::Move(const DesktopPoint& aPoint) {
   auto scale = GetDesktopToDeviceScale();
   mBounds.MoveTo(LayoutDeviceIntPoint::Round(aPoint * scale));
+  if (IsPopup() && mBandeWindow) {
+    LayoutDeviceIntPoint position = mBounds.TopLeft() - ParentOrigin();
+    BandeHost::MovePopup(mBandeWindow, position.x / scale.scale,
+                         position.y / scale.scale, mBounds.width / scale.scale,
+                         mBounds.height / scale.scale);
+  }
 }
 
 void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
@@ -267,7 +323,11 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
   if (size == mBounds.Size()) {
     return;
   }
-  if (mBandeWindow) {
+  if (mBandeWindow && IsPopup()) {
+    LayoutDeviceIntPoint position = mBounds.TopLeft() - ParentOrigin();
+    BandeHost::MovePopup(mBandeWindow, position.x / scale.scale,
+                         position.y / scale.scale, aSize.width, aSize.height);
+  } else if (mBandeWindow) {
     BandeHost::SetSize(mBandeWindow, uint32_t(aSize.width),
                        uint32_t(aSize.height));
   }
@@ -519,6 +579,18 @@ static uint16_t DomButtonBit(uint32_t aButton) {
   }
 }
 
+bool nsWindow::RolledUpOnPress() {
+  if (IsPopup()) {
+    return false;
+  }
+  nsIRollupListener* listener = GetActiveRollupListener();
+  nsCOMPtr<nsIWidget> rollupWidget = listener ? listener->GetRollupWidget() : nullptr;
+  if (!rollupWidget || rollupWidget == this || !listener->ShouldRollupOnMouseDown()) {
+    return false;
+  }
+  return listener->Rollup({});
+}
+
 void nsWindow::DispatchPointer(const BandeEvent& aEvent) {
   EventMessage message = eMouseMove;
   switch (aEvent.kind) {
@@ -529,6 +601,7 @@ void nsWindow::DispatchPointer(const BandeEvent& aEvent) {
       message = eMouseExitFromWidget;
       break;
     case BandeEventKind::PointerDown:
+      RolledUpOnPress();
       message = eMouseDown;
       mPressedButtons |= DomButtonBit(aEvent.a);
       break;
@@ -627,6 +700,11 @@ void nsWindow::DispatchFocus(bool aFocused) {
 }
 
 void nsWindow::DispatchToplevelState(uint32_t aState) {
+  const bool activated = aState & BandeStateActivated;
+  if (activated != mActivated) {
+    mActivated = activated;
+    DispatchFocus(activated);
+  }
   nsSizeMode mode = nsSizeMode_Normal;
   if (aState & BandeStateFullscreen) {
     mode = nsSizeMode_Fullscreen;
@@ -660,9 +738,6 @@ void nsWindow::OnBandeEvent(const BandeEvent& aEvent) {
     case BandeEventKind::Key:
       DispatchKey(aEvent);
       break;
-    case BandeEventKind::Focus:
-      DispatchFocus(aEvent.a);
-      break;
     case BandeEventKind::Close:
       if (mWidgetListener) {
         mWidgetListener->RequestWindowClose(this);
@@ -673,6 +748,24 @@ void nsWindow::OnBandeEvent(const BandeEvent& aEvent) {
       break;
     case BandeEventKind::Resized:
       RefreshBounds(aEvent.a, aEvent.b);
+      break;
+    case BandeEventKind::PopupMoved: {
+      double scale = FractionalScaleFactor();
+      LayoutDeviceIntPoint position =
+          ParentOrigin() + LayoutDeviceIntPoint(int32_t(aEvent.x * scale),
+                                                int32_t(aEvent.y * scale));
+      if (position != mBounds.TopLeft()) {
+        mBounds.MoveTo(position);
+        if (mWidgetListener) {
+          mWidgetListener->WindowMoved(this, position, ByMoveToRect::No);
+        }
+      }
+      break;
+    }
+    case BandeEventKind::PopupDismissed:
+      if (nsIRollupListener* listener = GetActiveRollupListener()) {
+        listener->Rollup({});
+      }
       break;
     default:
       break;

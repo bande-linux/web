@@ -123,7 +123,8 @@ class nsWindow final : public nsIWidget {
   nsresult SetTitle(const nsAString& aTitle) override;
   void SetWindowClass(const nsAString& aType, const nsAString& aClass,
                       const nsAString& aName) override;
-  LayoutDeviceIntPoint WidgetToScreenOffset() override { return {}; }
+  LayoutDeviceIntPoint WidgetToScreenOffset() override;
+  void CaptureRollupEvents(bool aDoCapture) override {}
   void SetCursor(const Cursor& aCursor) override;
   void SetInputContext(const InputContext& aContext,
                        const InputContextAction&) override {
@@ -161,6 +162,10 @@ class nsWindow final : public nsIWidget {
   double FractionalScaleFactor() const;
   LayoutDeviceIntPoint ToDevice(double aX, double aY) const;
   void MapToplevel();
+  void MapPopup();
+  nsWindow* ParentWindow() const;
+  LayoutDeviceIntPoint ParentOrigin() const;
+  bool RolledUpOnPress();
   bool MapSurfaceLocked(mozilla::widget::WaylandSurfaceLock& aLock);
   void UnmapToplevel();
   void RefreshBounds(uint32_t aWidth, uint32_t aHeight);
@@ -175,6 +180,8 @@ class nsWindow final : public nsIWidget {
   mozilla::Modifiers ModifiersOf(uint32_t aBits) const;
 
   uint64_t mBandeWindow = 0;
+  bool mGrabs = false;
+  bool mActivated = false;
   MozContainer mContainer;
   LayoutDeviceIntRect mBounds;
   LayoutDeviceIntRegion mOpaqueRegion;

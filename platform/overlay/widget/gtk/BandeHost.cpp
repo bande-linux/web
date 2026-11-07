@@ -19,6 +19,8 @@ static LazyLogModule sBandeLog("Bande");
 #define BANDE_FUNCTIONS(X)                                             \
   X(init, void*, int)                                                  \
   X(open, uint64_t, const char*, const char*, uint32_t, uint32_t)      \
+  X(open_popup, uint64_t, uint64_t, double, double, double, double, bool) \
+  X(move_popup, void, uint64_t, double, double, double, double)        \
   X(close, void, uint64_t)                                             \
   X(surface, void*, uint64_t)                                          \
   X(set_title, void, uint64_t, const char*)                            \
@@ -102,6 +104,14 @@ uint64_t BandeHost::Open(const char* aTitle, const char* aAppId,
   return s_open(aTitle, aAppId, aWidth, aHeight);
 }
 void BandeHost::Close(uint64_t aWindow) { s_close(aWindow); }
+uint64_t BandeHost::OpenPopup(uint64_t aParent, double aX, double aY,
+                              double aWidth, double aHeight, bool aGrab) {
+  return s_open_popup(aParent, aX, aY, aWidth, aHeight, aGrab);
+}
+void BandeHost::MovePopup(uint64_t aWindow, double aX, double aY,
+                          double aWidth, double aHeight) {
+  s_move_popup(aWindow, aX, aY, aWidth, aHeight);
+}
 wl_surface* BandeHost::Surface(uint64_t aWindow) {
   return static_cast<wl_surface*>(s_surface(aWindow));
 }

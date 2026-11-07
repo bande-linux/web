@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
-use bande_graphics::{Color, Cursor, Event, Modifiers, PointerButton, ResizeEdge, Scene, ScrollSource};
+use bande_graphics::{Color, Cursor, Rect, Event, Modifiers, PointerButton, ResizeEdge, Scene, ScrollSource};
 use bande_toolkit_platform::{Role, Surfaces, Transfer, Wait, Window, WindowEvent, step_surfaces};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client::{Connection, EventQueue};
@@ -16,7 +16,6 @@ pub const EVENT_POINTER_DOWN: u32 = 5;
 pub const EVENT_POINTER_UP: u32 = 6;
 pub const EVENT_SCROLL: u32 = 7;
 pub const EVENT_KEY: u32 = 8;
-pub const EVENT_FOCUS: u32 = 9;
 pub const EVENT_CLOSE: u32 = 10;
 pub const EVENT_TOPLEVEL_STATE: u32 = 11;
 pub const EVENT_RESIZED: u32 = 12;
@@ -24,6 +23,8 @@ pub const EVENT_APPEARANCE: u32 = 13;
 pub const EVENT_FD_READY: u32 = 14;
 pub const EVENT_CLIPBOARD_DATA: u32 = 15;
 pub const EVENT_CLIPBOARD_CHANGED: u32 = 16;
+pub const EVENT_POPUP_MOVED: u32 = 17;
+pub const EVENT_POPUP_DISMISSED: u32 = 18;
 
 const MOD_SHIFT: u32 = 1;
 const MOD_CONTROL: u32 = 2;
@@ -90,6 +91,7 @@ struct Host {
     watched: Vec<RawFd>,
     windows: Vec<Window>,
     ids: Vec<u64>,
+    parents: Vec<(u64, u64)>,
     next_id: u64,
     events: VecDeque<Queued>,
     current_text: Option<CString>,
@@ -189,7 +191,7 @@ impl Host {
             },
             WindowEvent::KeyDetail(detail) => Queued {
                 kind: EVENT_KEY,
-                window,
+                window: self.toplevel_of(window),
                 a: detail.code,
                 b: u32::from(detail.pressed) | (u32::from(detail.repeat) << 1),
                 c: detail.keysym,
@@ -210,10 +212,16 @@ impl Host {
                 window,
                 ..Queued::default()
             },
-            WindowEvent::Focus(focused) => Queued {
-                kind: EVENT_FOCUS,
+            WindowEvent::HostedMoved((x, y)) => Queued {
+                kind: EVENT_POPUP_MOVED,
                 window,
-                a: u32::from(focused),
+                x: f64::from(x),
+                y: f64::from(y),
+                ..Queued::default()
+            },
+            WindowEvent::PopupDismissed => Queued {
+                kind: EVENT_POPUP_DISMISSED,
+                window,
                 ..Queued::default()
             },
             WindowEvent::CloseRequested | WindowEvent::QuitRequested => Queued {
@@ -223,6 +231,9 @@ impl Host {
             },
             WindowEvent::ToplevelChanged(state) => {
                 let bit = |set: bool, value: u32| if set { value } else { 0 };
+                if state.activated {
+                    self.focused = Some(window);
+                }
                 Queued {
                     kind: EVENT_TOPLEVEL_STATE,
                     window,
@@ -248,10 +259,15 @@ impl Host {
             },
             _ => return,
         };
-        if queued.kind == EVENT_FOCUS && queued.a == 1 {
-            self.focused = Some(window);
-        }
         self.events.push_back(queued);
+    }
+
+    fn toplevel_of(&self, window: u64) -> u64 {
+        let mut current = window;
+        while let Some((_, parent)) = self.parents.iter().find(|(child, _)| *child == current) {
+            current = *parent;
+        }
+        current
     }
 
     fn clipboard_window(&mut self) -> Option<&mut Window> {
@@ -416,6 +432,7 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
         watched: Vec::new(),
         windows: Vec::new(),
         ids: Vec::new(),
+        parents: Vec::new(),
         next_id: 1,
         events: VecDeque::new(),
         current_text: None,
@@ -456,12 +473,64 @@ pub unsafe extern "C" fn bande_gecko_open(
     })
 }
 
+fn area(x: f64, y: f64, width: f64, height: f64) -> Rect {
+    Rect::new(x as f32, y as f32, width as f32, height as f32)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_open_popup(
+    parent: u64,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    grab: bool,
+) -> u64 {
+    with_host(0, |host| {
+        let Some(parent_window) = host.window(parent) else {
+            return 0;
+        };
+        let Ok(role) = parent_window.hosted_popup(area(x, y, width, height), grab) else {
+            return 0;
+        };
+        let size = (width.round().max(1.0) as u32, height.round().max(1.0) as u32);
+        let Ok(mut window) = parent_window.open_beside(role, size) else {
+            return 0;
+        };
+        window.set_key_detail(true);
+        if window.set_hosted_backdrop([0, 0, 0, 0]).is_err() {
+            return 0;
+        }
+        let id = host.next_id;
+        host.next_id += 1;
+        host.windows.push(window);
+        host.ids.push(id);
+        host.parents.push((id, parent));
+        id
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_move_popup(id: u64, x: f64, y: f64, width: f64, height: f64) {
+    with_host((), |host| {
+        if let Some(window) = host.window(id) {
+            let size = (width.round().max(1.0) as u32, height.round().max(1.0) as u32);
+            let _ = window.set_hosted_size(size);
+            let _ = window.move_hosted_popup(area(x, y, width, height));
+        }
+    });
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn bande_gecko_close(id: u64) {
     with_host((), |host| {
         if let Some(index) = host.position(id) {
             host.windows.remove(index);
             host.ids.remove(index);
+        }
+        host.parents.retain(|(child, _)| *child != id);
+        if host.focused == Some(id) {
+            host.focused = None;
         }
     });
 }
