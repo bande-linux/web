@@ -21,6 +21,7 @@ pub const EVENT_CLOSE: u32 = 10;
 pub const EVENT_TOPLEVEL_STATE: u32 = 11;
 pub const EVENT_RESIZED: u32 = 12;
 pub const EVENT_APPEARANCE: u32 = 13;
+pub const EVENT_FD_READY: u32 = 14;
 
 const MOD_SHIFT: u32 = 1;
 const MOD_CONTROL: u32 = 2;
@@ -81,6 +82,7 @@ struct Host {
     connection: Connection,
     idle: EventQueue<Idle>,
     wake: OwnedFd,
+    watched: Vec<RawFd>,
     windows: Vec<Window>,
     ids: Vec<u64>,
     next_id: u64,
@@ -250,11 +252,9 @@ impl Host {
             return false;
         };
         let connection_fd = guard.connection_fd();
-        let wake = self.wake.as_fd();
-        let mut fds = [
-            PollFd::new(&connection_fd, PollFlags::IN),
-            PollFd::new(&wake, PollFlags::IN),
-        ];
+        let sources = self.watched_fds();
+        let mut fds = vec![PollFd::new(&connection_fd, PollFlags::IN)];
+        fds.extend(sources.iter().map(|fd| PollFd::new(fd, PollFlags::IN)));
         let zero = Timespec {
             tv_sec: 0,
             tv_nsec: 0,
@@ -262,14 +262,40 @@ impl Host {
         if poll(&mut fds, (!block).then_some(&zero)).is_err() {
             return false;
         }
-        let (wayland, woken) = (!fds[0].revents().is_empty(), !fds[1].revents().is_empty());
+        let wayland = !fds[0].revents().is_empty();
+        let ready: Vec<usize> = (0..sources.len())
+            .filter(|at| !fds[at + 1].revents().is_empty())
+            .collect();
+        drop(fds);
+        drop(sources);
         if wayland && guard.read().is_err() {
             return false;
         }
-        if woken {
-            self.drain_wake();
+        for index in ready {
+            self.source_is_ready(index);
         }
         true
+    }
+
+    fn watched_fds(&self) -> Vec<BorrowedFd<'_>> {
+        let mut fds = vec![self.wake.as_fd()];
+        fds.extend(
+            self.watched
+                .iter()
+                .map(|fd| unsafe { BorrowedFd::borrow_raw(*fd) }),
+        );
+        fds
+    }
+
+    fn source_is_ready(&mut self, index: usize) {
+        match index.checked_sub(1).and_then(|at| self.watched.get(at)) {
+            Some(fd) => self.events.push_back(Queued {
+                kind: EVENT_FD_READY,
+                a: u32::try_from(*fd).unwrap_or(0),
+                ..Queued::default()
+            }),
+            None => self.drain_wake(),
+        }
     }
 
     fn step(&mut self, block: bool) -> bool {
@@ -317,11 +343,11 @@ impl Surfaces for Host {
     }
 
     fn sources(&self) -> Vec<BorrowedFd<'_>> {
-        vec![self.wake.as_fd()]
+        self.watched_fds()
     }
 
-    fn source_ready(&mut self, _index: usize) {
-        self.drain_wake();
+    fn source_ready(&mut self, index: usize) {
+        self.source_is_ready(index);
     }
 
     fn closed(&mut self) -> bool {
@@ -357,6 +383,7 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
         connection,
         idle,
         wake,
+        watched: Vec::new(),
         windows: Vec::new(),
         ids: Vec::new(),
         next_id: 1,
@@ -560,6 +587,16 @@ pub extern "C" fn bande_gecko_set_cursor(id: u64, kind: u32) {
             window.set_cursor(cursor_of(kind));
         }
     });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_watch_fd(fd: RawFd) {
+    with_host((), |host| host.watched.push(fd));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_unwatch_fd(fd: RawFd) {
+    with_host((), |host| host.watched.retain(|known| *known != fd));
 }
 
 #[unsafe(no_mangle)]

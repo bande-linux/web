@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 
+#include "BandeFdWatch.h"
 #include "BandeHost.h"
 #include "gfxPlatform.h"
 #include "mozilla/Atomics.h"
@@ -99,6 +100,8 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
     if (event.kind == BandeEventKind::Wake) {
       QuitIfTermRequested();
       NativeEventCallback();
+    } else if (event.kind == BandeEventKind::FdReady) {
+      BandeFdWatchFire(int(event.a));
     } else {
       nsWindow::HandleBandeEvent(event);
     }

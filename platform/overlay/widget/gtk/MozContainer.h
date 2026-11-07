@@ -8,7 +8,7 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/widget/WaylandSurface.h"
 
-struct MozContainer {
+struct _MozContainer {
   RefPtr<mozilla::widget::WaylandSurface> mSurface;
 };
 

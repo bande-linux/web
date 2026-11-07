@@ -7,6 +7,7 @@
 #include <linux/input-event-codes.h>
 
 #include "BandeKeys.h"
+#include "NativeKeyBindings.h"
 #include "GtkCompositorWidget.h"
 #include "ScreenHelperBande.h"
 #include "WaylandVsyncSource.h"
@@ -451,67 +452,14 @@ TextEventDispatcherListener* nsWindow::GetNativeTextEventDispatcherListener() {
   return sListener;
 }
 
-static void AppendCommand(nsTArray<CommandInt>& aCommands, Command aCommand) {
-  aCommands.AppendElement(static_cast<CommandInt>(aCommand));
-}
-
 bool nsWindow::GetEditCommands(NativeKeyBindingsType aType,
                                const WidgetKeyboardEvent& aEvent,
                                nsTArray<CommandInt>& aCommands) {
   if (NS_WARN_IF(!nsIWidget::GetEditCommands(aType, aEvent, aCommands))) {
     return false;
   }
-  if (aType == NativeKeyBindingsType::RichTextEditor ||
-      aType == NativeKeyBindingsType::MultiLineEditor ||
-      aType == NativeKeyBindingsType::SingleLineEditor) {
-    const bool shift = aEvent.IsShift();
-    const bool word = aEvent.IsControl();
-    switch (aEvent.mKeyNameIndex) {
-      case KEY_NAME_INDEX_Backspace:
-        AppendCommand(aCommands, word ? Command::DeleteWordBackward
-                                      : Command::DeleteCharBackward);
-        break;
-      case KEY_NAME_INDEX_Delete:
-        AppendCommand(aCommands, word ? Command::DeleteWordForward
-                                      : Command::DeleteCharForward);
-        break;
-      case KEY_NAME_INDEX_ArrowLeft:
-        AppendCommand(aCommands,
-                      word ? (shift ? Command::SelectWordPrevious
-                                    : Command::WordPrevious)
-                           : (shift ? Command::SelectCharPrevious
-                                    : Command::CharPrevious));
-        break;
-      case KEY_NAME_INDEX_ArrowRight:
-        AppendCommand(aCommands, word ? (shift ? Command::SelectWordNext
-                                               : Command::WordNext)
-                                      : (shift ? Command::SelectCharNext
-                                               : Command::CharNext));
-        break;
-      case KEY_NAME_INDEX_Home:
-        AppendCommand(aCommands, shift ? Command::SelectBeginLine
-                                       : Command::BeginLine);
-        break;
-      case KEY_NAME_INDEX_End:
-        AppendCommand(aCommands,
-                      shift ? Command::SelectEndLine : Command::EndLine);
-        break;
-      case KEY_NAME_INDEX_ArrowUp:
-        if (aType != NativeKeyBindingsType::SingleLineEditor) {
-          AppendCommand(aCommands, shift ? Command::SelectLinePrevious
-                                         : Command::LinePrevious);
-        }
-        break;
-      case KEY_NAME_INDEX_ArrowDown:
-        if (aType != NativeKeyBindingsType::SingleLineEditor) {
-          AppendCommand(aCommands,
-                        shift ? Command::SelectLineNext : Command::LineNext);
-        }
-        break;
-      default:
-        break;
-    }
-  }
+  NativeKeyBindings::GetEditCommandsForTests(aType, aEvent, Nothing(),
+                                             aCommands);
   return true;
 }
 

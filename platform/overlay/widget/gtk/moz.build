@@ -31,6 +31,7 @@ EXPORTS.mozilla.widget += [
     "DMABufDevice.h",
     "DMABufFormats.h",
     "DMABufSurface.h",
+    "GSettings.h",
     "GtkCompositorWidget.h",
     "InProcessGtkCompositorWidget.h",
     "nsWaylandDisplay.h",
@@ -43,6 +44,7 @@ EXPORTS.mozilla.widget += [
 ]
 
 UNIFIED_SOURCES += [
+    "BandeFdWatch.cpp",
     "BandeHost.cpp",
     "BandeKeys.cpp",
     "BandeTimers.cpp",
@@ -54,6 +56,7 @@ UNIFIED_SOURCES += [
     "GfxInfo.cpp",
     "GtkCompositorWidget.cpp",
     "InProcessGtkCompositorWidget.cpp",
+    "NativeKeyBindings.cpp",
     "NativeMenuSupport.cpp",
     "nsAppShell.cpp",
     "nsBandeIdleService.cpp",

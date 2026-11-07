@@ -32,6 +32,8 @@ static LazyLogModule sBandeLog("Bande");
   X(toggle_zoom, void, uint64_t)                                       \
   X(set_full_screen, void, uint64_t, bool)                             \
   X(set_cursor, void, uint64_t, uint32_t)                              \
+  X(watch_fd, void, int)                                               \
+  X(unwatch_fd, void, int)                                             \
   X(flush, void)                                                       \
   X(step, bool, bool)                                                  \
   X(next_event, bool, BandeEvent*)
@@ -128,6 +130,8 @@ void BandeHost::SetCursor(uint64_t aWindow, uint32_t aKind) {
   s_set_cursor(aWindow, aKind);
 }
 void BandeHost::Flush() { s_flush(); }
+void BandeHost::WatchFd(int aFd) { s_watch_fd(aFd); }
+void BandeHost::UnwatchFd(int aFd) { s_unwatch_fd(aFd); }
 bool BandeHost::Step(bool aBlock) { return s_step(aBlock); }
 bool BandeHost::NextEvent(BandeEvent* aEvent) { return s_next_event(aEvent); }
 

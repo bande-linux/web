@@ -26,6 +26,7 @@ enum class BandeEventKind : uint32_t {
   ToplevelState = 11,
   Resized = 12,
   Appearance = 13,
+  FdReady = 14,
 };
 
 enum BandeModifier : uint32_t {
@@ -83,6 +84,8 @@ class BandeHost final {
   static void SetFullScreen(uint64_t aWindow, bool aFullScreen);
   static void SetCursor(uint64_t aWindow, uint32_t aKind);
   static void Flush();
+  static void WatchFd(int aFd);
+  static void UnwatchFd(int aFd);
   static bool Step(bool aBlock);
   static bool NextEvent(BandeEvent* aEvent);
 };

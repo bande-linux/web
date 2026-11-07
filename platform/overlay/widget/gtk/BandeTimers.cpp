@@ -39,9 +39,8 @@ uint32_t BandeTimeoutAdd(uint32_t aMilliseconds, BandeTimerCallback aCallback,
 }
 
 void BandeTimeoutRemove(uint32_t aTimer) {
-  nsCOMPtr<nsITimer> timer;
-  if (Timers().Remove(aTimer, getter_AddRefs(timer)) && timer) {
-    timer->Cancel();
+  if (auto timer = Timers().Extract(aTimer)) {
+    (*timer)->Cancel();
   }
 }
 
