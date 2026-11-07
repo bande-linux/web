@@ -1,0 +1,235 @@
+Drop GLib from downloads, keyring, sandbox, serial and DOM utilities
+
+--- firefox-esr-153.6.0esr.orig/dom/base/nsDOMWindowUtils.cpp
++++ firefox-esr-153.6.0esr/dom/base/nsDOMWindowUtils.cpp
+@@ -75,7 +75,6 @@
+ #include "nsStyleUtil.h"
+ 
+ #if defined(MOZ_WIDGET_GTK)
+-#  include <gdk/gdk.h>
+ #  if defined(MOZ_X11)
+ #    include <gdk/gdkx.h>
+ 
+--- firefox-esr-153.6.0esr.orig/dom/webserial/PosixSerialPlatformService.cpp
++++ firefox-esr-153.6.0esr/dom/webserial/PosixSerialPlatformService.cpp
+@@ -4,6 +4,10 @@
+ 
+ #include "PosixSerialPlatformService.h"
+ 
++#ifdef XP_LINUX
++#  include "BandeFdWatch.h"
++#endif
++
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -141,7 +145,7 @@
+ 
+ #ifdef XP_LINUX
+   if (mMonitorSourceID) {
+-    g_source_remove(mMonitorSourceID);
++    mozilla::widget::BandeFdWatchRemove(mMonitorSourceID);
+     mMonitorSourceID = 0;
+   }
+ #elif defined(XP_MACOSX)
+@@ -1252,23 +1256,10 @@
+     return NS_ERROR_FAILURE;
+   }
+ 
+-  GIOChannel* channel = g_io_channel_unix_new(fd);
+-  if (!channel) {
+-    MOZ_LOG(
+-        gWebSerialLog, LogLevel::Error,
+-        ("PosixSerialPlatformService[%p]::InitializeUdev g_io_channel_unix_new "
+-         "failed",
+-         this));
+-    return NS_ERROR_FAILURE;
+-  }
+-
+   // udev operations did not error, so don't clean it up here
+   cleanupUdevAndMonitor.release();
+ 
+-  mMonitorSourceID =
+-      g_io_add_watch(channel, GIOCondition(G_IO_IN | G_IO_ERR | G_IO_HUP),
+-                     OnUdevMonitor, this);
+-  g_io_channel_unref(channel);
++  mMonitorSourceID = mozilla::widget::BandeFdWatchAdd(fd, OnUdevMonitor, this);
+ 
+   MOZ_LOG(gWebSerialLog, LogLevel::Info,
+           ("PosixSerialPlatformService[%p]::InitializeUdev udev monitoring "
+@@ -1277,25 +1268,9 @@
+   return NS_OK;
+ }
+ 
+-gboolean PosixSerialPlatformService::OnUdevMonitor(GIOChannel* source,
+-                                                   GIOCondition condition,
+-                                                   gpointer data) {
+-  PosixSerialPlatformService* service =
+-      static_cast<PosixSerialPlatformService*>(data);
+-
+-  if (condition & (G_IO_ERR | G_IO_HUP)) {
+-    MOZ_LOG(
+-        gWebSerialLog, LogLevel::Error,
+-        ("PosixSerialPlatformService[%p]::OnUdevMonitor error condition: %d",
+-         service, condition));
+-    return FALSE;
+-  }
+-
+-  if (condition & G_IO_IN) {
+-    service->ReadUdevChange();
+-  }
+-
+-  return TRUE;
++bool PosixSerialPlatformService::OnUdevMonitor(int, void* aData) {
++  static_cast<PosixSerialPlatformService*>(aData)->ReadUdevChange();
++  return true;
+ }
+ 
+ void PosixSerialPlatformService::PopulatePortInfoFromUdev(
+--- firefox-esr-153.6.0esr.orig/dom/webserial/PosixSerialPlatformService.h
++++ firefox-esr-153.6.0esr/dom/webserial/PosixSerialPlatformService.h
+@@ -10,8 +10,6 @@
+ #include "nsTHashMap.h"
+ 
+ #ifdef XP_LINUX
+-#  include <glib.h>
+-
+ #  include "mozilla/UdevLib.h"
+ #endif
+ 
+@@ -53,8 +51,7 @@
+ 
+ #ifdef XP_LINUX
+   nsresult InitializeUdev();
+-  static gboolean OnUdevMonitor(GIOChannel* source, GIOCondition condition,
+-                                gpointer data);
++  static bool OnUdevMonitor(int aFd, void* aData);
+   void ReadUdevChange();
+   void PopulatePortInfoFromUdev(mozilla::udev_device* aDev,
+                                 const char* aDevnode,
+@@ -62,7 +59,7 @@
+ 
+   mozilla::UniquePtr<mozilla::udev_lib> mUdevLib;
+   mozilla::udev_monitor* mMonitor;
+-  guint mMonitorSourceID;
++  uint32_t mMonitorSourceID;
+ #endif
+ 
+ #ifdef XP_MACOSX
+--- firefox-esr-153.6.0esr.orig/security/manager/ssl/OSKeyStore.cpp
++++ firefox-esr-153.6.0esr/security/manager/ssl/OSKeyStore.cpp
+@@ -18,8 +18,6 @@
+ #  include "KeychainSecret.h"
+ #elif defined(XP_WIN)
+ #  include "CredentialManagerSecret.h"
+-#elif defined(MOZ_WIDGET_GTK)
+-#  include "LibSecret.h"
+ #  include "NSSKeyStore.h"
+ #else
+ #  include "NSSKeyStore.h"
+@@ -62,12 +60,6 @@
+   mKs.reset(new KeychainSecret());
+ #elif defined(XP_WIN)
+   mKs.reset(new CredentialManagerSecret());
+-#elif defined(MOZ_WIDGET_GTK)
+-  if (NS_SUCCEEDED(MaybeLoadLibSecret())) {
+-    mKs.reset(new LibSecret());
+-  } else {
+-    mKs.reset(new NSSKeyStore());
+-  }
+ #else
+   mKs.reset(new NSSKeyStore());
+ #endif
+--- firefox-esr-153.6.0esr.orig/security/sandbox/linux/broker/SandboxBrokerPolicyFactory.cpp
++++ firefox-esr-153.6.0esr/security/sandbox/linux/broker/SandboxBrokerPolicyFactory.cpp
+@@ -43,7 +43,6 @@
+ 
+ #ifdef MOZ_WIDGET_GTK
+ #  include "mozilla/WidgetUtilsGtk.h"
+-#  include <glib.h>
+ #endif
+ 
+ #ifdef MOZ_ENABLE_V4L2
+@@ -768,7 +767,7 @@
+   }
+ 
+ #ifdef MOZ_WIDGET_GTK
+-  if (const auto userDir = g_get_user_runtime_dir()) {
++  if (const auto userDir = PR_GetEnv("XDG_RUNTIME_DIR")) {
+     // Bug 1321134: DConf's single bit of shared memory
+     // The leaf filename is "user" by default, but is configurable.
+     nsPrintfCString shmPath("%s/dconf/", userDir);
+--- firefox-esr-153.6.0esr.orig/toolkit/components/downloads/DownloadPlatform.cpp
++++ firefox-esr-153.6.0esr/toolkit/components/downloads/DownloadPlatform.cpp
+@@ -29,10 +29,6 @@
+ #  include "../../../xpcom/io/CocoaFileUtils.h"
+ #endif
+ 
+-#ifdef MOZ_WIDGET_GTK
+-#  include <gtk/gtk.h>
+-#endif
+-
+ using namespace mozilla;
+ using dom::Promise;
+ 
+@@ -50,21 +46,6 @@
+   return gDownloadPlatformService;
+ }
+ 
+-#ifdef MOZ_WIDGET_GTK
+-static void gio_set_metadata_done(GObject* source_obj, GAsyncResult* res,
+-                                  gpointer user_data) {
+-  GError* err = nullptr;
+-  g_file_set_attributes_finish(G_FILE(source_obj), res, nullptr, &err);
+-  if (err) {
+-#  ifdef DEBUG
+-    NS_DebugBreak(NS_DEBUG_WARNING, "Set file metadata failed: ", err->message,
+-                  __FILE__, __LINE__);
+-#  endif
+-    g_error_free(err);
+-  }
+-}
+-#endif
+-
+ #ifdef XP_MACOSX
+ // Caller is responsible for freeing any result (CF Create Rule)
+ CFURLRef CreateCFURLFromNSIURI(nsIURI* aURI) {
+@@ -148,38 +129,9 @@
+       if (addToRecentDocs && !aIsPrivate) {
+ #      ifdef XP_WIN
+         AddToRecentDocs(aTarget, path);
+-#      elif defined(MOZ_WIDGET_GTK)
+-        GtkRecentManager* manager = gtk_recent_manager_get_default();
+-
+-        gchar* uri = g_filename_to_uri(NS_ConvertUTF16toUTF8(path).get(),
+-                                       nullptr, nullptr);
+-        if (uri) {
+-          gtk_recent_manager_add_item(manager, uri);
+-          g_free(uri);
+-        }
+ #      endif
+       }
+ #    endif
+-#    ifdef MOZ_WIDGET_GTK
+-      // Private window should not leak URI to the system (Bug 1535950)
+-      if (!aIsPrivate) {
+-        // Use GIO to store the source URI for later display in the file
+-        // manager.
+-        GFile* gio_file =
+-            g_file_new_for_path(NS_ConvertUTF16toUTF8(path).get());
+-        nsCString source_uri;
+-        nsresult rv = aSource->GetSpec(source_uri);
+-        NS_ENSURE_SUCCESS(rv, rv);
+-        GFileInfo* file_info = g_file_info_new();
+-        g_file_info_set_attribute_string(file_info, "metadata::download-uri",
+-                                         source_uri.get());
+-        g_file_set_attributes_async(gio_file, file_info, G_FILE_QUERY_INFO_NONE,
+-                                    G_PRIORITY_DEFAULT, nullptr,
+-                                    gio_set_metadata_done, nullptr);
+-        g_object_unref(file_info);
+-        g_object_unref(gio_file);
+-      }
+-#    endif
+     }
+ #  endif
+ 

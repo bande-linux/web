@@ -26,3 +26,8 @@ bande/ship-tracking-lists.patch
 bande/drm-on-request.patch
 bande/version-name.patch
 bande/no-default-browser-prompt.patch
+bande/widget/build.patch
+bande/widget/startup.patch
+bande/widget/gfx.patch
+bande/widget/wayland.patch
+bande/widget/services.patch

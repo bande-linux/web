@@ -1,0 +1,672 @@
+Start without GTK: connect through the Bande library, no GTK init in child processes, plain message pump
+
+--- firefox-esr-153.6.0esr.orig/dom/ipc/ContentChild.cpp
++++ firefox-esr-153.6.0esr/dom/ipc/ContentChild.cpp
+@@ -294,7 +294,6 @@
+ #include "private/pprio.h"
+ 
+ #ifdef MOZ_WIDGET_GTK
+-#  include <gtk/gtk.h>
+ 
+ #  include "mozilla/WidgetUtilsGtk.h"
+ #  include "nsAppRunner.h"
+@@ -716,18 +715,6 @@
+         display_name = PR_GetEnv("DISPLAY");
+       }
+     }
+-    if (display_name) {
+-      int argc = 3;
+-      char option_name[] = "--display";
+-      char* argv[] = {
+-          // argv0 is unused because g_set_prgname() was called in
+-          // XRE_InitChildProcess().
+-          nullptr, option_name, const_cast<char*>(display_name), nullptr};
+-      char** argvp = argv;
+-      gtk_init(&argc, &argvp);
+-    } else {
+-      gtk_init(nullptr, nullptr);
+-    }
+   }
+ #endif
+ 
+--- firefox-esr-153.6.0esr.orig/dom/ipc/ContentParent.cpp
++++ firefox-esr-153.6.0esr/dom/ipc/ContentParent.cpp
+@@ -289,8 +289,6 @@
+ #endif
+ 
+ #ifdef MOZ_WIDGET_GTK
+-#  include <gdk/gdk.h>
+-
+ #  include "mozilla/WidgetUtilsGtk.h"
+ #endif
+ 
+--- firefox-esr-153.6.0esr.orig/gfx/ipc/GPUParent.cpp
++++ firefox-esr-153.6.0esr/gfx/ipc/GPUParent.cpp
+@@ -84,7 +84,6 @@
+ #  include <unistd.h>
+ #endif
+ #ifdef MOZ_WIDGET_GTK
+-#  include <gtk/gtk.h>
+ 
+ #  include "skia/include/ports/SkTypeface_cairo.h"
+ #endif
+@@ -347,18 +346,6 @@
+       display_name = PR_GetEnv("DISPLAY");
+     }
+   }
+-  if (display_name) {
+-    int argc = 3;
+-    char option_name[] = "--display";
+-    char* argv[] = {// argv0 is unused because g_set_prgname() was called in
+-                    // XRE_InitChildProcess().
+-                    nullptr, option_name, display_name, nullptr};
+-    char** argvp = argv;
+-    gtk_init(&argc, &argvp);
+-  } else {
+-    gtk_init(nullptr, nullptr);
+-  }
+-
+   // Ensure we have an FT library for font instantiation.
+   // This would normally be set by gfxPlatform::Init().
+   // Since we bypass that, we must do it here instead.
+--- firefox-esr-153.6.0esr.orig/ipc/chromium/src/base/message_loop.cc
++++ firefox-esr-153.6.0esr/ipc/chromium/src/base/message_loop.cc
+@@ -28,9 +28,6 @@
+ #endif
+ #if defined(XP_LINUX) || defined(__DragonFly__) || defined(XP_FREEBSD) || \
+     defined(XP_NETBSD) || defined(XP_OPENBSD)
+-#  if defined(MOZ_WIDGET_GTK)
+-#    include "base/message_pump_glib.h"
+-#  endif
+ #endif
+ #ifdef ANDROID
+ #  include "base/message_pump_android.h"
+@@ -279,7 +276,7 @@
+     pump_ = base::MessagePumpMac::Create();
+ #  elif defined(XP_LINUX) || defined(__DragonFly__) || defined(XP_FREEBSD) || \
+       defined(XP_NETBSD) || defined(XP_OPENBSD)
+-    pump_ = new base::MessagePumpForUI();
++    pump_ = new base::MessagePumpDefault();
+ #  endif  // XP_LINUX
+   } else if (type_ == TYPE_IO) {
+ #  if defined(XP_DARWIN)
+--- firefox-esr-153.6.0esr.orig/js/xpconnect/shell/xpcshell.cpp
++++ firefox-esr-153.6.0esr/js/xpconnect/shell/xpcshell.cpp
+@@ -27,7 +27,6 @@
+ #endif
+ 
+ #ifdef MOZ_WIDGET_GTK
+-#  include <gtk/gtk.h>
+ #endif
+ 
+ #include "mozilla/BaseProfiler.h"
+@@ -38,10 +37,6 @@
+ 
+ int main(int argc, char** argv, char** envp) {
+ #ifdef MOZ_WIDGET_GTK
+-  // A default display may or may not be required for xpcshell tests, and so
+-  // is not created here. Instead we set the command line args, which is a
+-  // fairly cheap operation.
+-  gtk_parse_args(&argc, &argv);
+ #endif
+ 
+ #ifdef XP_MACOSX
+--- firefox-esr-153.6.0esr.orig/toolkit/xre/glxtest/glxtest.cpp
++++ firefox-esr-153.6.0esr/toolkit/xre/glxtest/glxtest.cpp
+@@ -26,7 +26,6 @@
+ #include <stdint.h>
+ #include <inttypes.h>
+ #include <string.h>
+-#include <gdk/gdk.h>
+ 
+ #if defined(MOZ_ASAN) || defined(FUZZING)
+ #  include <signal.h>
+@@ -1130,12 +1129,6 @@
+         output_pipe = atoi(optarg);
+         break;
+       case 'h':
+-#ifdef MOZ_WAYLAND
+-        // Dummy call to mozgtk to prevent the linker from removing
+-        // the dependency with --as-needed.
+-        // see toolkit/library/moz.build for details.
+-        gdk_display_get_default();
+-#endif
+         PrintUsage();
+         return 0;
+       default:
+--- firefox-esr-153.6.0esr.orig/toolkit/xre/nsAppRunner.cpp
++++ firefox-esr-153.6.0esr/toolkit/xre/nsAppRunner.cpp
+@@ -257,7 +257,6 @@
+ #endif
+ 
+ #ifdef USE_GLX_TEST
+-#  include "mozilla/GUniquePtr.h"
+ #  include "mozilla/GfxInfo.h"
+ #endif
+ 
+@@ -338,22 +337,16 @@
+ #endif
+ 
+ #if defined(MOZ_WIDGET_GTK)
+-#  include <glib.h>
+ #  include "mozilla/WidgetUtilsGtk.h"
+-#  include <gtk/gtk.h>
+ #  ifdef MOZ_WAYLAND
+-#    include <gdk/gdkwayland.h>
++#    include "BandeHost.h"
+ #    include "mozilla/widget/nsWaylandDisplay.h"
+-#    include "wayland-proxy.h"
+ #  endif
+ #  ifdef MOZ_X11
+ #    include <gdk/gdkx.h>
+ #  endif /* MOZ_X11 */
+ #endif
+ 
+-#if defined(MOZ_WAYLAND)
+-constinit std::unique_ptr<WaylandProxy> gWaylandProxy;
+-#endif
+ 
+ #include "BinaryPath.h"
+ 
+@@ -439,42 +432,7 @@
+   }
+ }
+ 
+-#if defined(MOZ_WAYLAND)
+-bool IsWaylandEnabled() {
+-  static bool isWaylandEnabled = []() {
+-    const char* waylandDisplay = PR_GetEnv("WAYLAND_DISPLAY");
+-    if (!waylandDisplay) {
+-      return false;
+-    }
+-    if (!PR_GetEnv("DISPLAY")) {
+-      // No X11 display, so try to run wayland.
+-      return true;
+-    }
+-    // MOZ_ENABLE_WAYLAND is our primary Wayland on/off switch.
+-    if (const char* waylandPref = PR_GetEnv("MOZ_ENABLE_WAYLAND")) {
+-      return *waylandPref == '1';
+-    }
+-    if (const char* backendPref = PR_GetEnv("GDK_BACKEND")) {
+-      if (!strncmp(backendPref, "wayland", 7)) {
+-        NS_WARNING(
+-            "Wayland backend should be enabled by MOZ_ENABLE_WAYLAND=1."
+-            "GDK_BACKEND is a Gtk3 debug variable and may cause issues.");
+-        return true;
+-      }
+-    }
+-    // Enable by default when we're running on a recent enough GTK version. We'd
+-    // like to check further details like compositor version and so on ideally
+-    // to make sure we don't enable it on old Mutter or what not, but we can't,
+-    // so let's assume that if the user is running on a Wayland session by
+-    // default we're ok, since either the distro has enabled Wayland by default,
+-    // or the user has gone out of their way to use Wayland.
+-    return !gtk_check_version(3, 24, 30);
+-  }();
+-  return isWaylandEnabled;
+-}
+-#else
+-bool IsWaylandEnabled() { return false; }
+-#endif
++bool IsWaylandEnabled() { return !!PR_GetEnv("WAYLAND_DISPLAY"); }
+ 
+ /**
+  * Output a string to the user.  This method is really only meant to be used to
+@@ -4792,11 +4750,6 @@
+     return 0;
+   }
+ 
+-#  ifdef MOZ_WIDGET_GTK
+-  if (XRE_IsParentProcess()) {
+-    widget::RegisterHostApp();
+-  }
+-#  endif
+ #endif
+ 
+   rv = XRE_InitCommandLine(gArgc, gArgv);
+@@ -5068,39 +5021,6 @@
+   // has been initialized to make sure everything is running
+   // consistently.
+ 
+-  // Set program name to the one defined in application.ini.
+-  g_set_prgname(gAppData->remotingName);
+-
+-  // Initialize GTK here for splash.
+-
+-#  if defined(MOZ_X11)
+-  // Disable XInput2 multidevice support due to focus bugginess.
+-  // See bugs 1182700, 1170342.
+-  // gdk_disable_multidevice() affects Gdk X11 backend only,
+-  // the multidevice support is always enabled on Wayland backend.
+-  int32_t useXI2 = 0;
+-  if (const char* useXI2Env = PR_GetEnv("MOZ_USE_XINPUT2")) {
+-    useXI2 = (*useXI2Env != '0');
+-  } else {
+-    // Steam Deck needs multidevice support for touchscreen
+-    if (const char* currentDesktop = PR_GetEnv("XDG_CURRENT_DESKTOP")) {
+-      useXI2 |= (nsDependentCString(currentDesktop) == "gamescope"_ns);
+-    }
+-#    ifdef EARLY_BETA_OR_EARLIER
+-    // We tried 3.24.0+ but had problems, let's retry with newer versions. See
+-    // bug 1660212.
+-    useXI2 |= !gtk_check_version(3, 24, 49);
+-#    endif
+-  }
+-  if (!useXI2) {
+-    gdk_disable_multidevice();
+-  }
+-#  endif /* MOZ_X11 */
+-
+-  // Open the display ourselves instead of using gtk_init, so that we can
+-  // close it without fear that one day gtk might clean up the display it
+-  // opens.
+-  if (!gtk_parse_args(&gArgc, &gArgv)) return 1;
+ #endif /* MOZ_WIDGET_GTK */
+ 
+ #ifdef FUZZING
+@@ -5151,119 +5071,10 @@
+   }
+ #endif
+ #if defined(MOZ_WIDGET_GTK)
+-  if (!isBackgroundTaskMode && !gfxPlatform::IsHeadless()) {
+-    const char* display_name = nullptr;
+-    bool saveDisplayArg = false;
+-
+-    // display_name is owned by gdk.
+-    display_name = gdk_get_display_arg_name();
+-    bool waylandEnabled = IsWaylandEnabled();
+-#  ifdef MOZ_WAYLAND
+-    if (!display_name) {
+-      auto* proxyEnv = getenv("MOZ_DISABLE_WAYLAND_PROXY");
+-      bool disableWaylandProxy = proxyEnv && *proxyEnv;
+-      if (!disableWaylandProxy && XRE_IsParentProcess() && waylandEnabled) {
+-        auto* proxyLog = getenv("WAYLAND_PROXY_LOG");
+-        WaylandProxy::SetVerbose(proxyLog && *proxyLog);
+-        WaylandProxy::SetThreadStartCallback(
+-            [] { PROFILER_REGISTER_THREAD("WaylandProxy"); });
+-        WaylandProxy::SetThreadStopCallback(
+-            [] { PROFILER_UNREGISTER_THREAD(); });
+-        WaylandProxy::SetCompositorUnavailableHandler(
+-            WlCompositorUnavailableHandler);
+-        WaylandProxy::SetCompositorSilentDisconnectHandler(
+-            WlCompositorSilentDisconnectHandler);
+-        WaylandProxy::AddState(WAYLAND_PROXY_ENABLED);
+-        gWaylandProxy = WaylandProxy::Create();
+-        if (gWaylandProxy) {
+-          if (!gWaylandProxy->RunThread()) {
+-            Output(true, "Failed to run Wayland proxy\n");
+-          }
+-        }
+-      } else {
+-        WaylandProxy::AddState(WAYLAND_PROXY_DISABLED);
+-      }
+-    }
+-#  endif
+-
+-    // if --display argument is given make sure it's
+-    // also passed to ContentChild::Init() by MOZ_GDK_DISPLAY.
+-    if (display_name) {
+-      SaveWordToEnv("MOZ_GDK_DISPLAY", nsDependentCString(display_name));
+-      saveDisplayArg = true;
+-    }
+-
+-    // On Wayland disabled builds read X11 DISPLAY env exclusively
+-    // and don't care about different displays.
+-    if (!waylandEnabled && !display_name) {
+-      display_name = PR_GetEnv("DISPLAY");
+-      if (!display_name) {
+-        PR_fprintf(PR_STDERR,
+-                   "Error: no DISPLAY environment variable specified\n");
+-        return 1;
+-      }
+-    }
+-
+-    if (display_name) {
+-      GdkDisplay* disp = gdk_display_open(display_name);
+-      if (!disp) {
+-        PR_fprintf(PR_STDERR, "Error: cannot open display: %s\n", display_name);
+-        return 1;
+-      }
+-      if (saveDisplayArg) {
+-        if (GdkIsX11Display(disp)) {
+-          SaveWordToEnv("DISPLAY", nsDependentCString(display_name));
+-        } else if (GdkIsWaylandDisplay(disp)) {
+-          SaveWordToEnv("WAYLAND_DISPLAY", nsDependentCString(display_name));
+-        }
+-      }
+-    } else {
+-      gdk_display_manager_open_display(gdk_display_manager_get(), nullptr);
+-    }
+-#  if defined(MOZ_WAYLAND)
+-    // We want to use proxy for main connection only so
+-    // restore original Wayland display for next potential Wayland connections
+-    // from gfx probe code and so on.
+-    if (gWaylandProxy) {
+-      gWaylandProxy->RestoreWaylandDisplay();
+-    }
+-    if (waylandEnabled && PR_GetEnv("WAYLAND_DISPLAY") && GdkIsX11Display()) {
+-      // Gtk somehow switched to X11 display but we want Wayland.
+-      // It may happen if compositor response is missig or it's slow
+-      // or WAYLAND_DISPLAY is wrong. In such case throw warning but
+-      // run with X11.
+-      Output(true,
+-             "Error: Failed to open Wayland display, fallback to X11. "
+-             "WAYLAND_DISPLAY='%s' DISPLAY='%s'\n",
+-             PR_GetEnv("WAYLAND_DISPLAY"), PR_GetEnv("DISPLAY"));
+-
+-      // We need to unset WAYLAND_DISPLAY. Gfx probe code doesn't have fallback
+-      // to X11 and we'll end with Browser running SW rendering only then.
+-      g_unsetenv("WAYLAND_DISPLAY");
+-      gWaylandProxy = nullptr;
+-    }
+-#  endif
+-    if (!gdk_display_get_default()) {
+-      Output(true,
+-             "Error: we don't have any display, WAYLAND_DISPLAY='%s' "
+-             "DISPLAY='%s'\n",
+-             PR_GetEnv("WAYLAND_DISPLAY"), PR_GetEnv("DISPLAY"));
+-      return 1;
+-    }
+-    // Check that Wayland only and X11 only builds
+-    // use appropriate displays.
+-#  if defined(MOZ_WAYLAND) && !defined(MOZ_X11)
+-    if (!GdkIsWaylandDisplay()) {
+-      Output(true, "Wayland only build is missig Wayland display!\n");
+-      return 1;
+-    }
+-#  endif
+-#  if !defined(MOZ_WAYLAND) && defined(MOZ_X11)
+-    if (!GdkIsX11Display()) {
+-      Output(true, "X11 only build is missig X11 display!\n");
+-      return 1;
+-    }
+-#  endif
++  if (!isBackgroundTaskMode && !gfxPlatform::IsHeadless() &&
++      !widget::BandeHost::Start()) {
++    Output(true, "Error: cannot connect to the Wayland display\n");
++    return 1;
+   }
+ #endif
+ #if defined(MOZ_HAS_REMOTE)
+@@ -5277,10 +5088,6 @@
+     }
+   }
+ #endif
+-#if defined(MOZ_WIDGET_GTK)
+-  g_set_application_name(mAppData->name);
+-
+-#endif /* defined(MOZ_WIDGET_GTK) */
+ #ifdef MOZ_X11
+   // Do this after initializing GDK, or GDK will install its own handler.
+   XRE_InstallX11ErrorHandler();
+@@ -6168,7 +5975,7 @@
+       // Clear the environment variables so they won't be inherited by child
+       // processes and confuse things.
+       for (const auto& name : kStartupTokenNames) {
+-        g_unsetenv(name.get());
++        unsetenv(name.get());
+       }
+ #endif
+ 
+@@ -6601,7 +6408,6 @@
+   if (!gfxPlatform::IsHeadless()) {
+ #  ifdef MOZ_WAYLAND
+     WaylandDisplayRelease();
+-    gWaylandProxy = nullptr;
+ #  endif
+   }
+ #endif
+--- firefox-esr-153.6.0esr.orig/toolkit/xre/nsEmbedFunctions.cpp
++++ firefox-esr-153.6.0esr/toolkit/xre/nsEmbedFunctions.cpp
+@@ -7,9 +7,6 @@
+ #include "nsXULAppAPI.h"
+ 
+ #include <stdlib.h>
+-#if defined(MOZ_WIDGET_GTK)
+-#  include <glib.h>
+-#endif
+ 
+ #include "prenv.h"
+ 
+@@ -49,7 +46,6 @@
+ #  include "gfxPlatformMac.h"
+ #endif
+ #include "nsX11ErrorHandler.h"
+-#include "nsGDKErrorHandler.h"
+ #include "base/at_exit.h"
+ #include "base/message_loop.h"
+ #include "base/process_util.h"
+@@ -373,10 +369,6 @@
+ #ifdef MOZ_X11
+   XInitThreads();
+ #endif
+-#ifdef MOZ_WIDGET_GTK
+-  // Setting the name here avoids the need to pass this through to gtk_init().
+-  g_set_prgname(aArgv[0]);
+-#endif
+ 
+ #ifdef XP_UNIX
+   if (PR_GetEnv("MOZ_DEBUG_CHILD_PROCESS") ||
+@@ -751,7 +743,6 @@
+ #ifdef MOZ_X11
+ void XRE_InstallX11ErrorHandler() {
+ #  ifdef MOZ_WIDGET_GTK
+-  InstallGdkErrorHandler();
+ #  endif
+ 
+   // Ensure our X11 error handler overrides the default GDK error handler such
+--- firefox-esr-153.6.0esr.orig/toolkit/xre/nsSigHandlers.cpp
++++ firefox-esr-153.6.0esr/toolkit/xre/nsSigHandlers.cpp
+@@ -41,9 +41,6 @@
+ #    include "WidgetUtilsGtk.h"
+ #  endif
+ 
+-#  ifdef MOZ_WAYLAND
+-#    include "wayland-proxy.h"
+-#  endif
+ 
+ // Note: some tests manipulate this value.
+ unsigned int _gdb_sleep_duration = 300;
+@@ -120,110 +117,6 @@
+ 
+ #  endif  // CRAWL_STACK_ON_SIGSEGV
+ 
+-#  ifdef MOZ_WIDGET_GTK
+-// Need this include for version test below.
+-#    include <glib.h>
+-#  endif
+-
+-#  if defined(MOZ_WIDGET_GTK)
+-
+-#    if GLIB_MAJOR_VERSION == 2 && GLIB_MINOR_VERSION < 50
+-// These types are only available in glib 2.50+
+-typedef enum {
+-  G_LOG_WRITER_HANDLED = 1,
+-  G_LOG_WRITER_UNHANDLED = 0,
+-} GLogWriterOutput;
+-typedef struct _GLogField GLogField;
+-struct _GLogField {
+-  const gchar* key;
+-  gconstpointer value;
+-  gssize length;
+-};
+-typedef GLogWriterOutput (*GLogWriterFunc)(GLogLevelFlags log_level,
+-                                           const GLogField* fields,
+-                                           gsize n_fields, gpointer user_data);
+-#    endif
+-
+-static GLogFunc orig_log_func = nullptr;
+-
+-extern "C" {
+-static void glib_log_func(const gchar* log_domain, GLogLevelFlags log_level,
+-                          const gchar* message, gpointer user_data);
+-static GLogWriterOutput glib_log_writer_func(GLogLevelFlags, const GLogField*,
+-                                             gsize, gpointer);
+-}
+-
+-// GDK sometimes avoids calling exit handlers, but we still want to know when we
+-// crash, see https://gitlab.gnome.org/GNOME/gtk/-/issues/4514 and bug 1743144.
+-static bool IsCrashyGtkMessage(const nsACString& aMessage) {
+-  if (aMessage.EqualsLiteral("Lost connection to Wayland compositor.")) {
+-    // https://gitlab.gnome.org/GNOME/gtk/-/blob/gtk-3-24/gdk/wayland/gdkeventsource.c#L210
+-    return true;
+-  }
+-  if (StringBeginsWith(aMessage, "Error flushing display: "_ns)) {
+-    // https://gitlab.gnome.org/GNOME/gtk/-/blob/gtk-3-24/gdk/wayland/gdkeventsource.c#L68
+-    return true;
+-  }
+-  if (StringBeginsWith(aMessage, "Error reading events from display: "_ns)) {
+-    // https://gitlab.gnome.org/GNOME/gtk/-/blob/gtk-3-24/gdk/wayland/gdkeventsource.c#L97
+-    return true;
+-  }
+-  if (StringBeginsWith(aMessage, "Error "_ns) &&
+-      StringEndsWith(aMessage, " dispatching to Wayland display."_ns)) {
+-    // https://gitlab.gnome.org/GNOME/gtk/-/blob/gtk-3-24/gdk/wayland/gdkeventsource.c#L205
+-    return true;
+-  }
+-  return false;
+-}
+-
+-static void HandleGLibMessage(GLogLevelFlags aLogLevel,
+-                              const nsDependentCString& aMessage) {
+-  if (MOZ_UNLIKELY(IsCrashyGtkMessage(aMessage))) {
+-#    ifdef MOZ_WAYLAND
+-    MOZ_CRASH_UNSAFE_PRINTF(
+-        "(%s) %s Proxy: %s",
+-        mozilla::widget::GetDesktopEnvironmentIdentifier().get(),
+-        strdup(aMessage.get()), WaylandProxy::GetState());
+-#    else
+-    MOZ_CRASH_UNSAFE_PRINTF(
+-        "(%s) %s", mozilla::widget::GetDesktopEnvironmentIdentifier().get(),
+-        strdup(aMessage.get()));
+-#    endif
+-  }
+-
+-  if (aLogLevel &
+-      (G_LOG_LEVEL_ERROR | G_LOG_FLAG_FATAL | G_LOG_FLAG_RECURSION)) {
+-    NS_DebugBreak(NS_DEBUG_ASSERTION, aMessage.get(), "glib assertion",
+-                  __FILE__, __LINE__);
+-  } else if (aLogLevel & (G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_WARNING)) {
+-    NS_DebugBreak(NS_DEBUG_WARNING, aMessage.get(), "glib warning", __FILE__,
+-                  __LINE__);
+-  }
+-}
+-
+-/* static */ void glib_log_func(const gchar* log_domain,
+-                                GLogLevelFlags log_level, const gchar* message,
+-                                gpointer user_data) {
+-  HandleGLibMessage(log_level, nsDependentCString(message));
+-  orig_log_func(log_domain, log_level, message, nullptr);
+-}
+-
+-GLogWriterOutput glib_log_writer_func(GLogLevelFlags flags,
+-                                      const GLogField* fields, gsize n_fields,
+-                                      gpointer user_data) {
+-  static const GLogWriterFunc sLogWriterDefault =
+-      (GLogWriterFunc)dlsym(RTLD_DEFAULT, "g_log_writer_default");
+-  for (gsize i = 0; i < n_fields; ++i) {
+-    if (!strcmp(fields[i].key, "MESSAGE") && fields[i].length < 0) {
+-      HandleGLibMessage(flags,
+-                        nsDependentCString((const char*)fields[i].value));
+-      break;
+-    }
+-  }
+-  return sLogWriterDefault(flags, fields, n_fields, user_data);
+-}
+-
+-#  endif
+ 
+ #  ifdef SA_SIGINFO
+ static void fpehandler(int signum, siginfo_t* si, void* context) {
+@@ -369,23 +262,6 @@
+   }
+ #  endif
+ 
+-#  ifdef MOZ_WIDGET_GTK
+-  // Override the default glib logging function to intercept some crashes that
+-  // are uninterceptable otherwise. Also, when XPCOM_DEBUG_BREAK is set, we can
+-  // also get stacks for them, so we get stacks for it too.
+-  //
+-  // If we can hook via g_log_set_writer_func, then we don't need to hook via
+-  // g_log_set_default_handler, because the GTK default handler uses structured
+-  // logging and thus will end up in our log writer function anyways.
+-  static const auto sSetLogWriter =
+-      (void (*)(GLogWriterFunc, gpointer, GDestroyNotify))dlsym(
+-          RTLD_DEFAULT, "g_log_set_writer_func");
+-  if (sSetLogWriter) {
+-    sSetLogWriter(glib_log_writer_func, nullptr, nullptr);
+-  } else {
+-    orig_log_func = g_log_set_default_handler(glib_log_func, nullptr);
+-  }
+-#  endif
+ }
+ 
+ #elif XP_WIN
+--- firefox-esr-153.6.0esr.orig/xpcom/base/nsSystemInfo.cpp
++++ firefox-esr-153.6.0esr/xpcom/base/nsSystemInfo.cpp
+@@ -50,7 +50,6 @@
+ #endif
+ 
+ #ifdef MOZ_WIDGET_GTK
+-#  include <gtk/gtk.h>
+ #  include <dlfcn.h>
+ #  include "mozilla/WidgetUtilsGtk.h"
+ #endif
+@@ -1711,22 +1710,7 @@
+   }
+ 
+ #if defined(MOZ_WIDGET_GTK)
+-  // This must be done here because NSPR can only separate OS's when compiled,
+-  // not libraries. 64 bytes is going to be well enough for "GTK " followed by 3
+-  // integers separated with dots.
+-  char gtkver[64];
+-  ssize_t gtkver_len = 0;
+-
+-  if (gtkver_len <= 0) {
+-    gtkver_len = SprintfLiteral(gtkver, "GTK %u.%u.%u", gtk_major_version,
+-                                gtk_minor_version, gtk_micro_version);
+-  }
+-
+   nsAutoCString secondaryLibrary;
+-  if (gtkver_len > 0 && gtkver_len < int(sizeof(gtkver))) {
+-    secondaryLibrary.Append(nsDependentCSubstring(gtkver, gtkver_len));
+-  }
+-
+ #  ifndef MOZ_TSAN
+   // With TSan, avoid loading libpulse here because we cannot unload it
+   // afterwards due to restrictions from TSan about unloading libraries
+--- firefox-esr-153.6.0esr.orig/xpcom/components/ManifestParser.cpp
++++ firefox-esr-153.6.0esr/xpcom/components/ManifestParser.cpp
+@@ -14,8 +14,6 @@
+ #elif defined(MOZ_WIDGET_COCOA)
+ #  include <CoreServices/CoreServices.h>
+ #  include "nsCocoaFeatures.h"
+-#elif defined(MOZ_WIDGET_GTK)
+-#  include <gtk/gtk.h>
+ #endif
+ 
+ #ifdef MOZ_WIDGET_ANDROID
+@@ -457,9 +455,6 @@
+   SInt32 majorVersion = nsCocoaFeatures::macOSVersionMajor();
+   SInt32 minorVersion = nsCocoaFeatures::macOSVersionMinor();
+   nsTextFormatter::ssprintf(osVersion, u"%ld.%ld", majorVersion, minorVersion);
+-#elif defined(MOZ_WIDGET_GTK)
+-  nsTextFormatter::ssprintf(osVersion, u"%ld.%ld", gtk_major_version,
+-                            gtk_minor_version);
+ #elif defined(MOZ_WIDGET_ANDROID)
+   bool isTablet = false;
+   if (jni::IsAvailable()) {
+--- firefox-esr-153.6.0esr.orig/xpcom/glue/standalone/nsXPCOMGlue.cpp
++++ firefox-esr-153.6.0esr/xpcom/glue/standalone/nsXPCOMGlue.cpp
+@@ -328,11 +328,6 @@
+   return Ok();
+ }
+ 
+-#if defined(MOZ_WIDGET_GTK) && \
+-    (defined(MOZ_MEMORY) || defined(__FreeBSD__) || defined(__NetBSD__))
+-#  define MOZ_GSLICE_INIT
+-#endif
+-
+ #ifdef MOZ_GSLICE_INIT
+ #  include <glib.h>
+ 

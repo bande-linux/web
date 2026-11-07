@@ -1,0 +1,957 @@
+Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
+
+--- firefox-esr-153.6.0esr.orig/widget/gtk/DMABufFormats.cpp
++++ firefox-esr-153.6.0esr/widget/gtk/DMABufFormats.cpp
+@@ -13,7 +13,6 @@
+ #include "WidgetUtilsGtk.h"
+ #ifdef MOZ_WAYLAND
+ #  include "nsWaylandDisplay.h"
+-#  include "mozilla/widget/mozwayland.h"
+ #  include "mozilla/widget/linux-dmabuf-unstable-v1-client-protocol.h"
+ #endif
+ #include "mozilla/gfx/gfxVars.h"
+--- firefox-esr-153.6.0esr.orig/widget/gtk/GfxInfo.cpp
++++ firefox-esr-153.6.0esr/widget/gtk/GfxInfo.cpp
+@@ -11,15 +11,17 @@
+ #include <sys/types.h>
+ #include <sys/utsname.h>
+ #include <sys/wait.h>
+-#include <glib.h>
+ #include <fcntl.h>
++#include <spawn.h>
++
++extern "C" char** environ;
++
+ 
+ #include "mozilla/gfx/Logging.h"
+ #include "mozilla/SSE.h"
+ #include "mozilla/glean/GfxMetrics.h"
+ #include "mozilla/XREAppData.h"
+ #include "mozilla/ScopeExit.h"
+-#include "mozilla/GUniquePtr.h"
+ #include "mozilla/StaticPrefs_media.h"
+ #include "nsCRTGlue.h"
+ #include "nsExceptionHandler.h"
+@@ -144,13 +146,9 @@
+     return false;
+   }
+ 
+-  GIOChannel* channel = nullptr;
+   *aData = nullptr;
+ 
+   auto free = mozilla::MakeScopeExit([&] {
+-    if (channel) {
+-      g_io_channel_unref(channel);
+-    }
+     if (*aPipe >= 0) {
+       close(*aPipe);
+       *aPipe = -1;
+@@ -177,27 +175,33 @@
+     }
+   }
+ 
+-  channel = g_io_channel_unix_new(*aPipe);
+   MakeFdNonBlocking(*aPipe);
+ 
+-  GUniquePtr<GError> error;
+-  gsize length = 0;
+-  int ret;
+-  do {
+-    error = nullptr;
+-    ret = g_io_channel_read_to_end(channel, aData, &length,
+-                                   getter_Transfers(error));
+-  } while (ret == G_IO_STATUS_AGAIN && TimeStamp::Now() < deadline);
+-  if (error || ret != G_IO_STATUS_NORMAL) {
+-    gfxCriticalNote << "ManageChildProcess(" << aProcessName
+-                    << "): failed to read data from child process: ";
+-    if (error) {
+-      gfxCriticalNote << error->message;
+-    } else {
+-      gfxCriticalNote << "timeout";
++  nsCString output;
++  char buffer[4096];
++  while (true) {
++    ssize_t count = read(*aPipe, buffer, sizeof(buffer));
++    if (count > 0) {
++      output.Append(buffer, count);
++      continue;
+     }
+-    return false;
++    if (count == 0) {
++      break;
++    }
++    if (errno != EAGAIN && errno != EINTR) {
++      gfxCriticalNote << "ManageChildProcess(" << aProcessName
++                      << "): failed to read data from child process: "
++                      << strerror(errno);
++      return false;
++    }
++    if (TimeStamp::Now() > deadline) {
++      gfxCriticalNote << "ManageChildProcess(" << aProcessName
++                      << "): failed to read data from child process: timeout";
++      return false;
++    }
++    poll(&pfd, 1, aTimeout);
+   }
++  *aData = strdup(output.get());
+ 
+   int status = 0;
+   int pid = *aPID;
+@@ -251,7 +255,7 @@
+   GfxInfoBase::GetData();
+ 
+   char* glxData = nullptr;
+-  auto free = mozilla::MakeScopeExit([&] { g_free((void*)glxData); });
++  auto free = mozilla::MakeScopeExit([&] { ::free((void*)glxData); });
+ 
+   bool error = !ManageChildProcess("glxtest", &sGLXTestPID, &sGLXTestPipe,
+                                    GFX_TEST_TIMEOUT, &glxData);
+@@ -669,19 +673,22 @@
+     }
+   }
+ 
+-  // Use G_SPAWN_LEAVE_DESCRIPTORS_OPEN | G_SPAWN_DO_NOT_REAP_CHILD flags
+-  // to g_spawn_async_with_pipes() run posix_spawn() directly.
+-  int pid;
+-  GUniquePtr<GError> err;
+-  g_spawn_async_with_pipes(
+-      nullptr, argv, nullptr,
+-      GSpawnFlags(G_SPAWN_LEAVE_DESCRIPTORS_OPEN | G_SPAWN_DO_NOT_REAP_CHILD),
+-      nullptr, nullptr, &pid, nullptr, aOutPipe, nullptr,
+-      getter_Transfers(err));
+-  if (err) {
+-    gfxCriticalNote << "FireTestProcess failed: " << err->message << "\n";
++  posix_spawn_file_actions_t actions;
++  posix_spawn_file_actions_init(&actions);
++  int pipefd[2] = {-1, -1};
++  pid_t pid = 0;
++  if (aOutPipe && pipe2(pipefd, O_CLOEXEC) == 0) {
++    posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
++    *aOutPipe = pipefd[0];
++  }
++  if (posix_spawn(&pid, argv[0], &actions, nullptr, argv, environ)) {
++    gfxCriticalNote << "FireTestProcess failed: " << strerror(errno) << "\n";
+     pid = 0;
+   }
++  posix_spawn_file_actions_destroy(&actions);
++  if (pipefd[1] >= 0) {
++    close(pipefd[1]);
++  }
+   for (auto& arg : argv) {
+     if (!arg) {
+       break;
+@@ -723,7 +730,7 @@
+ 
+ #ifdef MOZ_ENABLE_VAAPI
+   char* vaapiData = nullptr;
+-  auto free = mozilla::MakeScopeExit([&] { g_free((void*)vaapiData); });
++  auto free = mozilla::MakeScopeExit([&] { ::free((void*)vaapiData); });
+ 
+   int vaapiPipe = -1;
+   int vaapiPID = 0;
+@@ -820,7 +827,7 @@
+ 
+ #if defined(MOZ_ENABLE_VULKAN_VIDEO)
+   char* vulkanData = nullptr;
+-  auto freeVulkan = mozilla::MakeScopeExit([&] { g_free((void*)vulkanData); });
++  auto freeVulkan = mozilla::MakeScopeExit([&] { ::free((void*)vulkanData); });
+ 
+   int vulkanPipe = -1;
+   int vulkanPID = 0;
+@@ -894,7 +901,7 @@
+ // the appropriate one.
+ void GfxInfo::V4L2ProbeDevice(nsCString& dev) {
+   char* v4l2Data = nullptr;
+-  auto free = mozilla::MakeScopeExit([&] { g_free((void*)v4l2Data); });
++  auto free = mozilla::MakeScopeExit([&] { ::free((void*)v4l2Data); });
+ 
+   int v4l2Pipe = -1;
+   int v4l2PID = 0;
+--- firefox-esr-153.6.0esr.orig/widget/gtk/WaylandBuffer.cpp
++++ firefox-esr-153.6.0esr/widget/gtk/WaylandBuffer.cpp
+@@ -210,26 +210,7 @@
+     return;
+   }
+ 
+-  cairo_surface_t* surface = nullptr;
+-  auto unmap = MakeScopeExit([&] {
+-    if (surface) {
+-      cairo_surface_destroy(surface);
+-    }
+-  });
+-  surface = cairo_image_surface_create_for_data(
+-      (unsigned char*)mShmPool->GetImageData(), CAIRO_FORMAT_ARGB32,
+-      mSize.width, mSize.height, BUFFER_BPP * mSize.width);
+-  if (cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS) {
+-    nsCString filename;
+-    if (mDumpDir) {
+-      filename.Append(mDumpDir);
+-      filename.Append('/');
+-    }
+-    filename.Append(nsPrintfCString("firefox-wl-sw-buffer-%.5d-%s.png",
+-                                    mDumpSerial++, aHint));
+-    cairo_surface_write_to_png(surface, filename.get());
+-    LOGWAYLAND("Dumped wl_buffer to %s\n", filename.get());
+-  }
++  NS_WARNING("Dumping wl_buffers is not available");
+ }
+ #endif
+ 
+--- firefox-esr-153.6.0esr.orig/widget/gtk/WaylandSurface.cpp
++++ firefox-esr-153.6.0esr/widget/gtk/WaylandSurface.cpp
+@@ -10,7 +10,8 @@
+ #include "mozilla/ToString.h"
+ #include <dlfcn.h>
+ #include <fcntl.h>
+-#include "ScreenHelperGTK.h"
++#include "prinrval.h"
++#include "BandeTimers.h"
+ #include "nsWindow.h"
+ #include "DMABufFormats.h"
+ #include "mozilla/gfx/gfxVars.h"
+@@ -63,27 +64,7 @@
+ }
+ #endif
+ 
+-void (*WaylandSurface::sGdkWaylandWindowAddCallbackSurface)(
+-    GdkWindow*, struct wl_surface*) = nullptr;
+-void (*WaylandSurface::sGdkWaylandWindowRemoveCallbackSurface)(
+-    GdkWindow*, struct wl_surface*) = nullptr;
+-
+-bool WaylandSurface::IsOpaqueRegionEnabled() {
+-  static bool sIsOpaqueRegionEnabled = []() {
+-    if (!StaticPrefs::widget_wayland_opaque_region_enabled_AtStartup()) {
+-      return false;
+-    }
+-    sGdkWaylandWindowAddCallbackSurface =
+-        reinterpret_cast<void (*)(GdkWindow*, struct wl_surface*)>(dlsym(
+-            RTLD_DEFAULT, "gdk_wayland_window_add_frame_callback_surface"));
+-    sGdkWaylandWindowRemoveCallbackSurface =
+-        reinterpret_cast<void (*)(GdkWindow*, struct wl_surface*)>(dlsym(
+-            RTLD_DEFAULT, "gdk_wayland_window_remove_frame_callback_surface"));
+-    return sGdkWaylandWindowAddCallbackSurface &&
+-           sGdkWaylandWindowRemoveCallbackSurface;
+-  }();
+-  return sIsOpaqueRegionEnabled;
+-}
++bool WaylandSurface::IsOpaqueRegionEnabled() { return false; }
+ 
+ WaylandSurface::WaylandSurface() = default;
+ 
+@@ -217,9 +198,9 @@
+ 
+   MOZ_DIAGNOSTIC_ASSERT(!mEmulatedVSyncCallbackTimerID, "Already created?");
+ 
+-  mEmulatedVSyncCallbackTimerID = g_timeout_add(
++  mEmulatedVSyncCallbackTimerID = BandeTimeoutAdd(
+       sEmulatedVSyncCallbackTimeoutMs,
+-      [](void* data) -> gint {
++      [](void* data) -> bool {
+         RefPtr surface = static_cast<WaylandSurface*>(data);
+         LOGS_VERBOSE("[%p]: WaylandSurface emulated frame callbacks",
+                      surface->GetLoggingWidget());
+@@ -229,13 +210,12 @@
+         // Get some timestamp for emulated callback.
+         // We don't compare between emulated / none-emulated ones
+         // so we're safe here.
+-        uint32_t timestampTime =
+-            static_cast<uint32_t>(g_get_monotonic_time() / 1000);
++        uint32_t timestampTime = static_cast<uint32_t>(PR_IntervalToMilliseconds(PR_IntervalNow()));
+         surface->VSyncCallbackHandler(
+             /* wl_callback */ nullptr, timestampTime,
+             /* aEmulated */ true,
+             /* aRoutedFromChildSurface */ false);
+-        return G_SOURCE_REMOVE;
++        return false;
+       },
+       this);
+ }
+@@ -361,7 +341,7 @@
+     mVSyncEmulateCheck = aVSyncEmulateCheck;
+   }
+   if (!mVSyncEmulateCheck) {
+-    MozClearHandleID(mEmulatedVSyncCallbackTimerID, g_source_remove);
++    MozClearHandleID(mEmulatedVSyncCallbackTimerID, BandeTimeoutRemove);
+   }
+ }
+ 
+@@ -538,10 +518,6 @@
+ void WaylandSurface::GdkCleanUpLocked(const WaylandSurfaceLock& aProofOfLock) {
+   LOGWAYLAND("WaylandSurface::GdkCleanUp()");
+   AssertIsOnMainThread();
+-  if (mGdkWindow) {
+-    RemoveOpaqueSurfaceHandlerLocked(aProofOfLock);
+-    mGdkWindow = nullptr;
+-  }
+   mIsPendingGdkCleanup = false;
+ }
+ 
+@@ -1107,67 +1083,6 @@
+   mGdkCommitCallback = nullptr;
+ }
+ 
+-void WaylandSurface::AfterPaintHandler(GdkFrameClock* aClock, void* aData) {
+-  auto* waylandSurface = static_cast<WaylandSurface*>(aData);
+-  if (waylandSurface->IsMapped()) {
+-    if (waylandSurface->mGdkCommitCallback) {
+-      waylandSurface->mGdkCommitCallback();
+-    }
+-    LOGS("[%p]: WaylandSurface::AfterPaintHandler()",
+-         waylandSurface->mLoggingWidget);
+-    WaylandSurfaceLock lock(waylandSurface);
+-    waylandSurface->CommitLocked(lock, /* aForceCommit */ true);
+-  }
+-}
+-
+-bool WaylandSurface::AddOpaqueSurfaceHandlerLocked(
+-    const WaylandSurfaceLock& aProofOfLock, GdkWindow* aGdkWindow,
+-    bool aRegisterCommitHandler) {
+-  if (!IsOpaqueRegionEnabled() || mIsOpaqueSurfaceHandlerSet) {
+-    return false;
+-  }
+-
+-  LOGWAYLAND(
+-      "WaylandSurface::AddOpaqueSurfaceHandlerLocked() "
+-      "aRegisterCommitHandler %d",
+-      aRegisterCommitHandler);
+-  AssertIsOnMainThread();
+-
+-  mGdkWindow = aGdkWindow;
+-  sGdkWaylandWindowAddCallbackSurface(mGdkWindow, mSurface);
+-  mIsOpaqueSurfaceHandlerSet = true;
+-
+-  if (aRegisterCommitHandler) {
+-    MOZ_DIAGNOSTIC_ASSERT(!mGdkAfterPaintId);
+-    mGdkAfterPaintId = g_signal_connect_after(
+-        gdk_window_get_frame_clock(mGdkWindow), "after-paint",
+-        G_CALLBACK(WaylandSurface::AfterPaintHandler), this);
+-  }
+-
+-  mIsPendingGdkCleanup = true;
+-  return true;
+-}
+-
+-bool WaylandSurface::RemoveOpaqueSurfaceHandlerLocked(
+-    const WaylandSurfaceLock& aProofOfLock) {
+-  if (!IsOpaqueRegionEnabled() || !mIsOpaqueSurfaceHandlerSet) {
+-    return false;
+-  }
+-  AssertIsOnMainThread();
+-  LOGWAYLAND("WaylandSurface::RemoveOpaqueSurfaceHandlerLocked()");
+-  sGdkWaylandWindowRemoveCallbackSurface(mGdkWindow, mSurface);
+-  mIsOpaqueSurfaceHandlerSet = false;
+-  if (mGdkAfterPaintId) {
+-    GdkFrameClock* frameClock = gdk_window_get_frame_clock(mGdkWindow);
+-    // If we're already unmapped frameClock is nullptr
+-    if (frameClock) {
+-      g_signal_handler_disconnect(frameClock, mGdkAfterPaintId);
+-    }
+-    mGdkAfterPaintId = 0;
+-  }
+-  return true;
+-}
+-
+ LayoutDeviceIntSize WaylandSurface::GetScaledSize(
+     const DesktopIntSize& aSize) const {
+   DesktopIntRect rect(
+@@ -1436,12 +1351,6 @@
+   }
+ }
+ 
+-GdkWindow* WaylandSurface::GetGdkWindow() const {
+-  // Gdk/Gtk code is used on main thread only
+-  AssertIsOnMainThread();
+-  return mGdkWindow;
+-}
+-
+ double WaylandSurface::GetScale() const {
+ #ifdef MOZ_LOGGING
+   static float lastLoggedScale = 0.0;
+@@ -1471,7 +1380,7 @@
+   }
+ 
+   LOGVERBOSE("WaylandSurface::GetScale() fall back to monitor scale!");
+-  return ScreenHelperGTK::GetGTKMonitorFractionalScaleFactor();
++  return 1.0;
+ }
+ 
+ void WaylandSurface::SetParentLocked(const WaylandSurfaceLock& aProofOfLock,
+--- firefox-esr-153.6.0esr.orig/widget/gtk/WaylandSurface.h
++++ firefox-esr-153.6.0esr/widget/gtk/WaylandSurface.h
+@@ -9,7 +9,6 @@
+ #include "mozilla/Mutex.h"
+ #include "mozilla/Atomics.h"
+ #include "WaylandSurfaceLock.h"
+-#include "mozilla/GRefPtr.h"
+ 
+ /* Workaround for bug at wayland-util.h,
+  * present in wayland-devel < 1.12
+@@ -298,7 +297,6 @@
+   bool SetCoordinatesScaleLocked(const WaylandSurfaceLock& aProofOfLock,
+                                  uint32_t scale_8_24);
+ 
+-  static void AfterPaintHandler(GdkFrameClock* aClock, void* aData);
+ 
+   // See https://gitlab.gnome.org/GNOME/gtk/-/merge_requests/3111 why we use it.
+   // If child surface covers whole area of parent surface and it's opaque,
+@@ -317,10 +315,6 @@
+   // To make sure WaylandSurface's wl_surface frame callback is generated,
+   // we need to commit the wl_surface regularly as Gdk registers frame callback
+   // for it at on_frame_clock_after_paint() event of GdkWindow.
+-  bool AddOpaqueSurfaceHandlerLocked(const WaylandSurfaceLock& aProofOfLock,
+-                                     GdkWindow* aGdkWindow,
+-                                     bool aRegisterCommitHandler);
+-  bool RemoveOpaqueSurfaceHandlerLocked(const WaylandSurfaceLock& aProofOfLock);
+ 
+   // Additional callback to call from on_frame_clock_after_paint()
+   // and before this wl_surface is commited.
+@@ -332,7 +326,6 @@
+ 
+   RefPtr<DMABufFormats> GetDMABufFormats() const { return mFormats; }
+ 
+-  GdkWindow* GetGdkWindow() const;
+ 
+   static bool IsOpaqueRegionEnabled();
+ 
+@@ -426,7 +419,6 @@
+   DesktopIntSize mSize;
+ 
+   // Parent GdkWindow where we paint to, directly or via subsurface.
+-  RefPtr<GdkWindow> mGdkWindow;
+ 
+   // Parent wl_surface owned by mGdkWindow. It's used when we're attached
+   // directly to MozContainer.
+@@ -497,7 +489,7 @@
+   std::function<void(bool)> mVSyncCallbackStateHandler = nullptr;
+   std::function<bool(void)> mVSyncEmulateCheck = nullptr;
+ 
+-  guint mEmulatedVSyncCallbackTimerID = 0;
++  uint32_t mEmulatedVSyncCallbackTimerID = 0;
+   constexpr static int sEmulatedVSyncCallbackTimeoutMs = (int)(1000.0 / 60.0);
+ 
+   // Frame callback used to set opaque region to wl_surface.
+@@ -511,12 +503,7 @@
+   // We may mark part of mSurface as opaque (non-transparent) if it's supported
+   // by Gtk which allows compositor to skip painting of covered parts.
+   mozilla::Atomic<bool, mozilla::Relaxed> mIsOpaqueSurfaceHandlerSet{false};
+-  gulong mGdkAfterPaintId = 0;
+   static bool sIsOpaqueRegionEnabled;
+-  static void (*sGdkWaylandWindowAddCallbackSurface)(GdkWindow*,
+-                                                     struct wl_surface*);
+-  static void (*sGdkWaylandWindowRemoveCallbackSurface)(GdkWindow*,
+-                                                        struct wl_surface*);
+ 
+   ScaleType mScaleType = ScaleType::Disabled;
+ 
+--- firefox-esr-153.6.0esr.orig/widget/gtk/WaylandVsyncSource.cpp
++++ firefox-esr-153.6.0esr/widget/gtk/WaylandVsyncSource.cpp
+@@ -14,7 +14,7 @@
+ #  include "mozilla/widget/WindowOcclusionState.h"
+ #  include "nsWindow.h"
+ 
+-#  include <gdk/gdkwayland.h>
++#  include "BandeTimers.h"
+ 
+ #  ifdef MOZ_LOGGING
+ #    include "mozilla/Logging.h"
+@@ -132,17 +132,17 @@
+   MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
+   if (!mHiddenWindowTimerID) {
+     LOG("WaylandVsyncSource::SetHiddenWindowVSync()");
+-    mHiddenWindowTimerID = g_timeout_add(
++    mHiddenWindowTimerID = BandeTimeoutAdd(
+         mHiddenWindowTimeout,
+-        [](void* data) -> gint {
++        [](void* data) -> bool {
+           RefPtr vsync = static_cast<WaylandVsyncSource*>(data);
+           if (vsync->HiddenWindowCallback()) {
+             // We want to fire again, so don't clear mHiddenWindowTimerID
+-            return G_SOURCE_CONTINUE;
++            return true;
+           }
+           // No need for g_source_remove, caller does it for us.
+           vsync->mHiddenWindowTimerID = 0;
+-          return G_SOURCE_REMOVE;
++          return false;
+         },
+         this);
+   }
+@@ -155,7 +155,7 @@
+   if (aEnabled) {
+     mLastVsyncTimeStamp = TimeStamp::Now();
+   } else {
+-    MozClearHandleID(mHiddenWindowTimerID, g_source_remove);
++    MozClearHandleID(mHiddenWindowTimerID, BandeTimeoutRemove);
+   }
+   WaylandSurfaceLock lock(mWaylandSurface);
+   mWaylandSurface->SetVSyncCallbackStateLocked(lock, aEnabled);
+@@ -371,7 +371,7 @@
+   mIsShutdown = true;
+   mVsyncEnabled = false;
+   mVsyncSourceEnabled = false;
+-  MozClearHandleID(mHiddenWindowTimerID, g_source_remove);
++  MozClearHandleID(mHiddenWindowTimerID, BandeTimeoutRemove);
+ }
+ 
+ }  // namespace mozilla
+--- firefox-esr-153.6.0esr.orig/widget/gtk/WaylandVsyncSource.h
++++ firefox-esr-153.6.0esr/widget/gtk/WaylandVsyncSource.h
+@@ -16,6 +16,8 @@
+ #include "VsyncSource.h"
+ #include "WaylandSurface.h"
+ 
++class nsWindow;
++
+ namespace mozilla {
+ 
+ using layers::NativeLayerRootWayland;
+@@ -101,8 +103,8 @@
+   uint32_t mLastTime MOZ_GUARDED_BY(mMutex) = 0;
+   bool mLastTimeEmulated MOZ_GUARDED_BY(mMutex) = false;
+ 
+-  guint mHiddenWindowTimerID = 0;    // Main thread only.
+-  const guint mHiddenWindowTimeout;  // Main thread only.
++  uint32_t mHiddenWindowTimerID = 0;    // Main thread only.
++  const uint32_t mHiddenWindowTimeout;  // Main thread only.
+ };
+ 
+ }  // namespace mozilla
+--- firefox-esr-153.6.0esr.orig/widget/gtk/WindowSurfaceProvider.cpp
++++ firefox-esr-153.6.0esr/widget/gtk/WindowSurfaceProvider.cpp
+@@ -15,7 +15,6 @@
+ 
+ #ifdef MOZ_WAYLAND
+ #  include "mozilla/StaticPrefs_widget.h"
+-#  include "WindowSurfaceCairo.h"
+ #  include "WindowSurfaceWaylandMultiBuffer.h"
+ #endif
+ #ifdef MOZ_X11
+@@ -114,9 +113,6 @@
+     if (!mWidget) {
+       return nullptr;
+     }
+-    if (mWidget->IsDragPopup()) {
+-      return MakeRefPtr<WindowSurfaceCairo>(mWidget);
+-    }
+     return MakeRefPtr<WindowSurfaceWaylandMB>(mWidget, mCompositorWidget);
+   }
+ #endif
+--- firefox-esr-153.6.0esr.orig/widget/gtk/WindowSurfaceProvider.h
++++ firefox-esr-153.6.0esr/widget/gtk/WindowSurfaceProvider.h
+@@ -6,7 +6,6 @@
+ #ifndef MOZILLA_WIDGET_GTK_WINDOW_SURFACE_PROVIDER_H
+ #define MOZILLA_WIDGET_GTK_WINDOW_SURFACE_PROVIDER_H
+ 
+-#include <gdk/gdk.h>
+ 
+ #include "mozilla/gfx/2D.h"
+ #include "mozilla/gfx/Types.h"
+--- firefox-esr-153.6.0esr.orig/widget/gtk/nsGtkUtils.h
++++ firefox-esr-153.6.0esr/widget/gtk/nsGtkUtils.h
+@@ -5,17 +5,13 @@
+ #ifndef nsGtkUtils_h_
+ #define nsGtkUtils_h_
+ 
+-#include <glib.h>
+ 
+-// Some gobject functions expect functions for gpointer arguments.
+-// gpointer is void* but C++ doesn't like casting functions to void*.
+-template <class T>
+-static inline gpointer FuncToGpointer(T aFunction) {
+-  return reinterpret_cast<gpointer>(
+-      reinterpret_cast<uintptr_t>
+-      // This cast just provides a warning if T is not a function.
+-      (reinterpret_cast<void (*)()>(aFunction)));
+-}
++#ifndef MIN
++#  define MIN(a, b) (((a) < (b)) ? (a) : (b))
++#endif
++#ifndef MAX
++#  define MAX(a, b) (((a) > (b)) ? (a) : (b))
++#endif
+ 
+ // Type-safe alternative to glib's g_clear_pointer.
+ //
+@@ -45,8 +41,8 @@
+   }
+ }
+ 
+-template <class T>
+-static inline void MozClearHandleID(T& handle, gboolean (*destroy)(T)) {
++template <class T, class F>
++static inline void MozClearHandleID(T& handle, F destroy) {
+   if (handle) {
+     destroy(handle);
+     handle = 0;
+--- firefox-esr-153.6.0esr.orig/widget/gtk/nsWaylandDisplay.cpp
++++ firefox-esr-153.6.0esr/widget/gtk/nsWaylandDisplay.cpp
+@@ -3,6 +3,8 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "nsWaylandDisplay.h"
++#include "BandeHost.h"
++#include <unistd.h>
+ #include "DMABufFormats.h"
+ 
+ #include "base/message_loop.h"    // for MessageLoop
+@@ -14,12 +16,9 @@
+ #include "mozilla/StaticPrefs_general.h"
+ #include "mozilla/Sprintf.h"
+ #include "WidgetUtilsGtk.h"
+-#include "nsGtkKeyUtils.h"
+ #include "nsGtkUtils.h"
+ #include "nsLayoutUtils.h"
+ #include "nsWindow.h"
+-#include "wayland-proxy.h"
+-#include "ScreenHelperGTK.h"
+ #include "nsIAppStartup.h"
+ #include "nsServiceManagerUtils.h"
+ #include "nsThreadUtils.h"
+@@ -58,11 +57,10 @@
+ }
+ 
+ wl_display* WaylandDisplayGetWLDisplay() {
+-  GdkDisplay* disp = gdk_display_get_default();
+-  if (!GdkIsWaylandDisplay(disp)) {
++  if (!XRE_IsParentProcess() || !BandeHost::Start()) {
+     return nullptr;
+   }
+-  return gdk_wayland_display_get_wl_display(disp);
++  return BandeHost::Display();
+ }
+ 
+ nsWaylandDisplay* WaylandDisplayGet() {
+@@ -94,11 +92,7 @@
+     if (!aSurface) {
+       mWindow = nullptr;
+     } else {
+-      GdkWindow* window =
+-          static_cast<GdkWindow*>(wl_surface_get_user_data(aSurface));
+-      mWindow = window ? static_cast<nsWindow*>(
+-                             g_object_get_data(G_OBJECT(window), "nsWindow"))
+-                       : nullptr;
++      mWindow = nullptr;
+     }
+     return mWindow;
+   }
+@@ -131,9 +125,6 @@
+     // nsWindow::OnSmoothScrollEvent() may spin event loop so
+     // mWindow/mSource/delta may be replaced.
+     int32_t source = mSource;
+-    float deltaX = mDeltaX;
+-    float deltaY = mDeltaY;
+-
+     mSource = -1;
+     mDeltaX = mDeltaY = 0.0f;
+ 
+@@ -142,9 +133,6 @@
+       return;
+     }
+ 
+-    RefPtr<nsWindow> win = mWindow;
+-    uint32_t eventTime = mTime;
+-    win->OnSmoothScrollEvent(eventTime, deltaX, deltaY);
+   }
+ 
+   void Clear() { mWindow = nullptr; }
+@@ -159,29 +147,12 @@
+ 
+ static WaylandPointerEvent sHoldGesture;
+ 
+-static void gesture_hold_begin(void* data,
+-                               struct zwp_pointer_gesture_hold_v1* hold,
+-                               uint32_t serial, uint32_t time,
+-                               struct wl_surface* surface, uint32_t fingers) {
+-  RefPtr<nsWindow> window = sHoldGesture.TakeWindow(surface);
+-  if (!window) {
+-    return;
+-  }
+-  window->OnTouchpadHoldEvent(GDK_TOUCHPAD_GESTURE_PHASE_BEGIN, time, fingers);
+-}
++static void gesture_hold_begin(void*, struct zwp_pointer_gesture_hold_v1*,
++                               uint32_t, uint32_t, struct wl_surface*,
++                               uint32_t) {}
+ 
+-static void gesture_hold_end(void* data,
+-                             struct zwp_pointer_gesture_hold_v1* hold,
+-                             uint32_t serial, uint32_t time,
+-                             int32_t cancelled) {
+-  RefPtr<nsWindow> window = sHoldGesture.GetAndClearWindow();
+-  if (!window) {
+-    return;
+-  }
+-  window->OnTouchpadHoldEvent(cancelled ? GDK_TOUCHPAD_GESTURE_PHASE_CANCEL
+-                                        : GDK_TOUCHPAD_GESTURE_PHASE_END,
+-                              time, 0);
+-}
++static void gesture_hold_end(void*, struct zwp_pointer_gesture_hold_v1*,
++                             uint32_t, uint32_t, int32_t) {}
+ 
+ static const struct zwp_pointer_gesture_hold_v1_listener gesture_hold_listener =
+     {gesture_hold_begin, gesture_hold_end};
+@@ -362,7 +333,7 @@
+  */
+ static void keyboard_handle_keymap(void* data, struct wl_keyboard* wl_keyboard,
+                                    uint32_t format, int fd, uint32_t size) {
+-  KeymapWrapper::HandleKeymap(format, fd, size);
++  close(fd);
+ }
+ 
+ static void keyboard_handle_enter(void* data, struct wl_keyboard* keyboard,
+@@ -373,7 +344,6 @@
+ 
+ static void keyboard_handle_leave(void* data, struct wl_keyboard* keyboard,
+                                   uint32_t serial, struct wl_surface* surface) {
+-  KeymapWrapper::ResetRepeatState();
+ }
+ 
+ static void keyboard_handle_key(void* data, struct wl_keyboard* keyboard,
+@@ -382,9 +352,6 @@
+   if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+     gLastSerial = serial;
+   }
+-  // hardware key code is +8.
+-  // https://gitlab.gnome.org/GNOME/gtk/-/blob/3.24.41/gdk/wayland/gdkdevice-wayland.c#L2341
+-  KeymapWrapper::KeyboardHandlerForWayland(serial, key + 8, state);
+ }
+ 
+ static void keyboard_handle_modifiers(void* data, struct wl_keyboard* keyboard,
+@@ -411,7 +378,6 @@
+   if (mKeyboard) {
+     wl_keyboard_release(mKeyboard);
+     mKeyboard = nullptr;
+-    KeymapWrapper::ClearKeymap();
+   }
+ }
+ 
+@@ -773,7 +739,6 @@
+       return;
+     }
+   }
+-  ScreenHelperGTK::RequestRefreshScreens();
+ }
+ 
+ static void global_registry_handler(void* data, wl_registry* registry,
+@@ -938,7 +903,9 @@
+     global_registry_handler, global_registry_remover};
+ 
+ nsWaylandDisplay::~nsWaylandDisplay() {
+-  g_list_free_full(mAsyncRoundtrips, (GDestroyNotify)wl_callback_destroy);
++  for (wl_callback* callback : mAsyncRoundtrips) {
++    wl_callback_destroy(callback);
++  }
+   MozClearPointer(mColorManager, wp_color_manager_v1_destroy);
+   MozClearPointer(mColorRepresentationManager,
+                   wp_color_representation_manager_v1_destroy);
+@@ -950,8 +917,7 @@
+                                               wl_callback* aCallback,
+                                               uint32_t aTime) {
+   auto* display = static_cast<nsWaylandDisplay*>(aData);
+-  display->mAsyncRoundtrips =
+-      g_list_remove(display->mAsyncRoundtrips, aCallback);
++  display->mAsyncRoundtrips.RemoveElement(aCallback);
+   wl_callback_destroy(aCallback);
+ }
+ 
+@@ -962,13 +928,13 @@
+   LOG("nsWaylandDisplay::RequestAsyncRoundtrip()");
+   wl_callback* callback = wl_display_sync(mDisplay);
+   wl_callback_add_listener(callback, &async_roundtrip_listener, this);
+-  mAsyncRoundtrips = g_list_append(mAsyncRoundtrips, callback);
++  mAsyncRoundtrips.AppendElement(callback);
+   wl_display_flush(mDisplay);
+ }
+ 
+ void nsWaylandDisplay::WaitForAsyncRoundtrips() {
+   LOG("nsWaylandDisplay::WaitForAsyncRoundtrips()");
+-  while (g_list_length(mAsyncRoundtrips) > 0) {
++  while (!mAsyncRoundtrips.IsEmpty()) {
+     if (wl_display_dispatch(mDisplay) < 0) {
+       NS_WARNING("Failed to get events from Wayland display!");
+       return;
+@@ -1053,7 +1019,7 @@
+ MOZ_NEVER_INLINE static void WlLogHandler_UnknownObject(const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 20% of crashes - Example: "wp_viewport#296: error 2: source rectangle out
+@@ -1062,7 +1028,7 @@
+     const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 20% of crashes - Example: "wl_display#1: error 1: invalid arguments for
+@@ -1071,7 +1037,7 @@
+     const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 12% of crashes - Example: "wp_color_manager_v1#44: error -1: Invalid output
+@@ -1080,7 +1046,7 @@
+     const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 8% of crashes - Example: "Message length 22222 exceeds limit 4096"
+@@ -1088,7 +1054,7 @@
+     const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 4% of crashes - Example: "wl_display#1: error 0: invalid object 61246"
+@@ -1096,7 +1062,7 @@
+     const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 4% of crashes - Example: "failed to import supplied dmabufs: EGL failed to
+@@ -1105,7 +1071,7 @@
+     const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 4% of crashes - Example: "wl_registry@36: error 0: invalid global
+@@ -1113,7 +1079,7 @@
+ MOZ_NEVER_INLINE static void WlLogHandler_RegistryError(const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 4% of crashes - Example: "invalid object (277), type (wl_callback), message
+@@ -1121,7 +1087,7 @@
+ MOZ_NEVER_INLINE static void WlLogHandler_CallbackInvalid(const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // 4% of crashes - Example: "error marshalling arguments for set_surface
+@@ -1129,7 +1095,7 @@
+ MOZ_NEVER_INLINE static void WlLogHandler_MarshallingError(const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // xdg_surface buffer mismatch - Example: "dg_wm_base@17: error 4: xdg_surface
+@@ -1138,7 +1104,7 @@
+     const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ // Timestamp of the last "still attached" message ignored by WlLogHandler.
+@@ -1238,13 +1204,13 @@
+   // Fallback for unmatched patterns - use original inline code
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ void WlCompositorUnavailableHandler() {
+   gfxCriticalNote << "Wayland compositor unavailable ("
+                   << GetDesktopEnvironmentIdentifier().get()
+-                  << "), proxy: " << WaylandProxy::GetState()
++                  << "), proxy: " << "none"
+                   << " - scheduling graceful shutdown";
+   // Called from the WaylandProxy thread. Dispatch to the main thread to
+   // trigger a clean Firefox shutdown instead of crashing.
+@@ -1263,7 +1229,7 @@
+     const char* error) {
+   MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
+                           GetDesktopEnvironmentIdentifier().get(), error,
+-                          WaylandProxy::GetState());
++                          "none");
+ }
+ 
+ void WlCompositorSilentDisconnectHandler(clock_t aFailureTime) {
+--- firefox-esr-153.6.0esr.orig/widget/gtk/nsWaylandDisplay.h
++++ firefox-esr-153.6.0esr/widget/gtk/nsWaylandDisplay.h
+@@ -8,6 +8,7 @@
+ #include <time.h>
+ #include "DMABufDevice.h"
+ 
++#include <wayland-egl.h>
+ #include "mozilla/widget/mozwayland.h"
+ #include "mozilla/widget/fractional-scale-v1-client-protocol.h"
+ #include "mozilla/widget/gtk-primary-selection-client-protocol.h"
+@@ -30,7 +31,6 @@
+ 
+ #include <gbm.h>
+ 
+-using GdkMonitor = struct _GdkMonitor;
+ 
+ namespace mozilla::widget {
+ 
+@@ -233,7 +233,7 @@
+   xx_session_v1* mWaylandSession = nullptr;
+   nsCString mWaylandSessionId;
+   RefPtr<DMABufFormats> mFormats;
+-  GList* mAsyncRoundtrips = nullptr;
++  nsTArray<wl_callback*> mAsyncRoundtrips;
+ 
+   struct ColorManagerSupportedFeature {
+     bool mICC = false;
+--- firefox-esr-153.6.0esr.orig/widget/gtk/wayland/xdg-output-unstable-v1-protocol.c
++++ firefox-esr-153.6.0esr/widget/gtk/wayland/xdg-output-unstable-v1-protocol.c
+@@ -24,7 +24,7 @@
+  */
+ 
+ #include <stdlib.h>
+-#include <gdk/gdkwayland.h>
++#include <wayland-client.h>
+ #include "wayland-util.h"
+ 
+ #ifndef __has_attribute
+--- firefox-esr-153.6.0esr.orig/widget/headless/HeadlessLookAndFeel.h
++++ firefox-esr-153.6.0esr/widget/headless/HeadlessLookAndFeel.h
+@@ -6,7 +6,9 @@
+ #define mozilla_widget_HeadlessLookAndFeel_h
+ 
+ #include "nsXPLookAndFeel.h"
+-#include "nsLookAndFeel.h"
++#if !defined(MOZ_WIDGET_GTK)
++#  include "nsLookAndFeel.h"
++#endif
+ 
+ namespace mozilla {
+ namespace widget {
+--- firefox-esr-153.6.0esr.orig/widget/headless/HeadlessLookAndFeelGTK.cpp
++++ firefox-esr-153.6.0esr/widget/headless/HeadlessLookAndFeelGTK.cpp
+@@ -5,6 +5,8 @@
+ #include "HeadlessLookAndFeel.h"
+ #include "nsStyleConsts.h"
+ 
++#include "gfxFont.h"
++
+ namespace mozilla::widget {
+ 
+ static const char16_t UNICODE_BULLET = 0x2022;
