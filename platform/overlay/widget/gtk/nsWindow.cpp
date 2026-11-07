@@ -689,7 +689,12 @@ void nsWindow::DispatchKey(const BandeEvent& aEvent) {
   }
 }
 
+static LazyLogModule sDragLog("BandeDrag");
+
 void nsWindow::DispatchDrag(const BandeEvent& aEvent) {
+  MOZ_LOG(sDragLog, LogLevel::Debug,
+          ("drag event %u at %f,%f a=%u len=%zu", uint32_t(aEvent.kind),
+           aEvent.x, aEvent.y, aEvent.a, aEvent.len));
   RefPtr<nsDragService> service = nsDragService::GetInstance();
   RefPtr<nsDragSession> session =
       static_cast<nsDragSession*>(service->GetCurrentSession(this));
