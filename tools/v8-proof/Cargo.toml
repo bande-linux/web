@@ -1,0 +1,16 @@
+[package]
+name = "v8-proof"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+v8 = "=152.2.0"
+libc = "0.2"
+
+[profile.release]
+debug = false
+lto = "thin"
+codegen-units = 16
+
+[workspace]
