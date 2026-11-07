@@ -164,10 +164,22 @@ void nsWindow::MapToplevel() {
   }
   LiveWindows().InsertOrUpdate(mBandeWindow, this);
   WaylandSurface* surface = mContainer.mSurface;
-  WaylandSurfaceLock lock(surface);
+  {
+    WaylandSurfaceLock lock(surface);
+    if (!MapSurfaceLocked(lock)) {
+      return;
+    }
+  }
+  uint32_t width = 0, height = 0;
+  BandeHost::Size(mBandeWindow, &width, &height);
+  surface->SetSize(DesktopIntSize(int32_t(width), int32_t(height)));
+}
+
+bool nsWindow::MapSurfaceLocked(WaylandSurfaceLock& lock) {
+  WaylandSurface* surface = mContainer.mSurface;
   if (!surface->MapLocked(lock, BandeHost::Surface(mBandeWindow),
                           DesktopIntPoint())) {
-    return;
+    return false;
   }
   surface->SetViewportFollowsSizeChangesLocked(lock);
   surface->SetScaleCallbackLocked(lock,
@@ -179,9 +191,7 @@ void nsWindow::MapToplevel() {
   surface->DisableUserInputLocked(lock);
   surface->CommitLocked(lock);
   surface->RunMapCallbackLocked(lock);
-  uint32_t width = 0, height = 0;
-  BandeHost::Size(mBandeWindow, &width, &height);
-  surface->SetSize(DesktopIntSize(int32_t(width), int32_t(height)));
+  return true;
 }
 
 void nsWindow::UnmapToplevel() {

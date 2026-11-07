@@ -161,6 +161,7 @@ class nsWindow final : public nsIWidget {
   double FractionalScaleFactor() const;
   LayoutDeviceIntPoint ToDevice(double aX, double aY) const;
   void MapToplevel();
+  bool MapSurfaceLocked(mozilla::widget::WaylandSurfaceLock& aLock);
   void UnmapToplevel();
   void RefreshBounds(uint32_t aWidth, uint32_t aHeight);
   void Paint();
