@@ -71,4 +71,5 @@ About 40 small patches' worth of hunks in about 40 existing files, about 500 cha
 1. This plan.
 2. Proof: no libgtk in `readelf -d`, a Bande window rendering a real page, pointer and keyboard, under the real headless compositor on a build VM. The proof build turns off D-Bus, Wi-Fi scanning, WebRTC, printing and accessibility. Each comes back at its stage below, and none of this ships until they have.
 3. Then, each driven by real input: tabs and the combined row; popups and menus; clipboard and drag; input methods; fullscreen; HiDPI and real screens; file dialogs; printing; accessibility; theme and dark mode; screen capture and WebRTC; single instance; idle, wake lock, media keys, keyring, gamepads, file icons.
+   Printing: Firefox produces its own PDF and hands it to desktop's print path: the `org.freedesktop.impl.portal.Print` portal, `bande-file-chooser --print`, `bande-printd`, with the dialog parented through xdg-foreign.
 4. Drop GTK from the package's dependencies; measure the default-install size on a VM.
