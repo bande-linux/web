@@ -39,6 +39,7 @@ static LazyLogModule sBandeLog("Bande");
   X(copy, void, bool, bool, size_t, const char* const*, const uint8_t* const*, const size_t*) \
   X(clipboard_types, size_t, char*, size_t)                            \
   X(start_drag, bool, uint64_t, uint32_t, size_t, const char* const*, const uint8_t* const*, const size_t*) \
+  X(set_text_input, void, uint64_t, bool, double, double, double, double) \
   X(accept_drag, void, uint64_t, uint32_t)                             \
   X(paste, bool, const char*)                                          \
   X(flush, void)                                                       \
@@ -159,6 +160,10 @@ bool BandeHost::StartDrag(uint64_t aWindow, uint32_t aActions, size_t aCount,
                           const uint8_t* const* aData,
                           const size_t* aLengths) {
   return s_start_drag(aWindow, aActions, aCount, aMimes, aData, aLengths);
+}
+void BandeHost::SetTextInput(uint64_t aWindow, bool aEnabled, double aX,
+                             double aY, double aWidth, double aHeight) {
+  s_set_text_input(aWindow, aEnabled, aX, aY, aWidth, aHeight);
 }
 void BandeHost::AcceptDrag(uint64_t aWindow, uint32_t aAction) {
   s_accept_drag(aWindow, aAction);

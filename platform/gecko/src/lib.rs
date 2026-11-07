@@ -30,6 +30,8 @@ pub const EVENT_DRAG_MOVE: u32 = 20;
 pub const EVENT_DRAG_LEAVE: u32 = 21;
 pub const EVENT_DRAG_DROP: u32 = 22;
 pub const EVENT_DRAG_FINISHED: u32 = 23;
+pub const EVENT_IME_PREEDIT: u32 = 24;
+pub const EVENT_IME_COMMIT: u32 = 25;
 
 const DRAG_COPY: u32 = 1;
 const DRAG_MOVE: u32 = 2;
@@ -100,6 +102,7 @@ struct Host {
     windows: Vec<Window>,
     ids: Vec<u64>,
     parents: Vec<(u64, u64)>,
+    text_areas: Vec<(u64, Rect)>,
     next_id: u64,
     events: VecDeque<Queued>,
     current_text: Option<CString>,
@@ -294,6 +297,20 @@ impl Host {
                 ..Queued::default()
             },
             WindowEvent::Drag(drag) => drag_event(window, drag),
+            WindowEvent::Input(Event::Commit(text)) => Queued {
+                kind: EVENT_IME_COMMIT,
+                window: self.toplevel_of(window),
+                text: CString::new(text).ok(),
+                ..Queued::default()
+            },
+            WindowEvent::Input(Event::Preedit { text, cursor }) => Queued {
+                kind: EVENT_IME_PREEDIT,
+                window: self.toplevel_of(window),
+                a: cursor.map_or(0, |(start, _)| u32::try_from(start).unwrap_or(0) + 1),
+                b: cursor.map_or(0, |(_, end)| u32::try_from(end).unwrap_or(0) + 1),
+                text: CString::new(text).ok(),
+                ..Queued::default()
+            },
             WindowEvent::PopupDismissed => Queued {
                 kind: EVENT_POPUP_DISMISSED,
                 window,
@@ -463,6 +480,14 @@ impl Surfaces for Host {
         }
     }
 
+    fn text_input_area(&self, index: usize) -> Option<Rect> {
+        let id = self.ids.get(index)?;
+        self.text_areas
+            .iter()
+            .find(|(window, _)| window == id)
+            .map(|(_, area)| *area)
+    }
+
     fn sources(&self) -> Vec<BorrowedFd<'_>> {
         self.watched_fds()
     }
@@ -508,6 +533,7 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
         windows: Vec::new(),
         ids: Vec::new(),
         parents: Vec::new(),
+        text_areas: Vec::new(),
         next_id: 1,
         events: VecDeque::new(),
         current_text: None,
@@ -934,6 +960,23 @@ pub extern "C" fn bande_gecko_accept_drag(id: u64, action: u32) {
     with_host((), |host| {
         if let Some(window) = host.window(id) {
             window.accept_drag(action_of(action));
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_set_text_input(
+    id: u64,
+    enabled: bool,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) {
+    with_host((), |host| {
+        host.text_areas.retain(|(window, _)| *window != id);
+        if enabled {
+            host.text_areas.push((id, area(x, y, width, height)));
         }
     });
 }

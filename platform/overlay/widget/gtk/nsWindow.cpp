@@ -22,6 +22,7 @@
 #include "mozilla/TextEventDispatcher.h"
 #include "mozilla/TextEventDispatcherListener.h"
 #include "mozilla/TextEvents.h"
+#include "mozilla/ContentEvents.h"
 #include "mozilla/WidgetUtils.h"
 #include "mozilla/XREAppData.h"
 #include "mozilla/dom/MouseEventBinding.h"
@@ -58,11 +59,44 @@ class BandeTextListener final : public TextEventDispatcherListener {
  public:
   NS_DECL_ISUPPORTS
 
-  NS_IMETHOD NotifyIME(TextEventDispatcher*, const IMENotification&) override {
+  NS_IMETHOD NotifyIME(TextEventDispatcher* aDispatcher,
+                       const IMENotification& aNotification) override {
+    RefPtr<nsWindow> window = nsWindow::FromWidget(aDispatcher->GetWidget());
+    if (!window) {
+      return NS_OK;
+    }
+    nsEventStatus status = nsEventStatus_eIgnore;
+    switch (aNotification.mMessage) {
+      case NOTIFY_IME_OF_FOCUS:
+        window->OnIMEFocus(true);
+        break;
+      case NOTIFY_IME_OF_BLUR:
+        window->OnIMEFocus(false);
+        break;
+      case NOTIFY_IME_OF_SELECTION_CHANGE:
+      case NOTIFY_IME_OF_POSITION_CHANGE:
+        window->UpdateTextInput();
+        break;
+      case REQUEST_TO_COMMIT_COMPOSITION:
+        if (aDispatcher->IsComposing() &&
+            NS_SUCCEEDED(aDispatcher->BeginNativeInputTransaction())) {
+          aDispatcher->CommitComposition(status);
+        }
+        break;
+      case REQUEST_TO_CANCEL_COMPOSITION:
+        if (aDispatcher->IsComposing() &&
+            NS_SUCCEEDED(aDispatcher->BeginNativeInputTransaction())) {
+          aDispatcher->CommitComposition(status, &EmptyString());
+        }
+        break;
+      default:
+        break;
+    }
     return NS_OK;
   }
   NS_IMETHOD_(IMENotificationRequests) GetIMENotificationRequests() override {
-    return IMENotificationRequests();
+    return IMENotificationRequests(
+        IMENotificationRequests::NOTIFY_POSITION_CHANGE);
   }
   NS_IMETHOD_(void) OnRemovedFrom(TextEventDispatcher*) override {}
   NS_IMETHOD_(void)
@@ -780,6 +814,70 @@ void nsWindow::DispatchDrag(const BandeEvent& aEvent) {
   }
 }
 
+void nsWindow::UpdateTextInput() {
+  if (!mBandeWindow) {
+    return;
+  }
+  const bool enabled = mIMEFocused && mInputContext.mIMEState.mEnabled ==
+                                          IMEEnabled::Enabled;
+  if (!enabled) {
+    BandeHost::SetTextInput(mBandeWindow, false, 0, 0, 0, 0);
+    return;
+  }
+  nsEventStatus status = nsEventStatus_eIgnore;
+  WidgetQueryContentEvent selection(true, eQuerySelectedText, this);
+  DispatchEvent(&selection, status);
+  LayoutDeviceIntRect caret(0, 0, 1, 1);
+  if (selection.Succeeded()) {
+    WidgetQueryContentEvent caretEvent(true, eQueryCaretRect, this);
+    caretEvent.InitForQueryCaretRect(selection.mReply->StartOffset());
+    DispatchEvent(&caretEvent, status);
+    if (caretEvent.Succeeded()) {
+      caret = caretEvent.mReply->mRect;
+    }
+  }
+  double scale = FractionalScaleFactor();
+  BandeHost::SetTextInput(mBandeWindow, true, caret.x / scale, caret.y / scale,
+                          std::max(caret.width, 1) / scale,
+                          std::max(caret.height, 1) / scale);
+}
+
+static uint32_t Utf16Offset(const nsACString& aUtf8, uint32_t aBytes) {
+  return NS_ConvertUTF8toUTF16(
+             Substring(aUtf8, 0, std::min<uint32_t>(aBytes, aUtf8.Length())))
+      .Length();
+}
+
+void nsWindow::DispatchComposition(const BandeEvent& aEvent) {
+  RefPtr<TextEventDispatcher> dispatcher = GetTextEventDispatcher();
+  if (NS_FAILED(dispatcher->BeginNativeInputTransaction())) {
+    return;
+  }
+  nsDependentCString utf8(aEvent.text ? aEvent.text : "");
+  NS_ConvertUTF8toUTF16 text(utf8);
+  nsEventStatus status = nsEventStatus_eIgnore;
+  if (aEvent.kind == BandeEventKind::ImeCommit) {
+    dispatcher->CommitComposition(status, &text);
+    return;
+  }
+  if (text.IsEmpty()) {
+    if (dispatcher->IsComposing()) {
+      dispatcher->CommitComposition(status, &EmptyString());
+    }
+    return;
+  }
+  if (NS_FAILED(dispatcher->SetPendingCompositionString(text)) ||
+      NS_FAILED(dispatcher->AppendClauseToPendingComposition(
+          text.Length(), TextRangeType::eRawClause))) {
+    return;
+  }
+  if (aEvent.a) {
+    dispatcher->SetCaretInPendingComposition(Utf16Offset(utf8, aEvent.a - 1),
+                                             0);
+  }
+  dispatcher->FlushPendingComposition(status);
+}
+
 void nsWindow::DispatchFocus(bool aFocused) {
   if (!mWidgetListener) {
     return;
@@ -829,6 +927,10 @@ void nsWindow::OnBandeEvent(const BandeEvent& aEvent) {
       break;
     case BandeEventKind::Key:
       DispatchKey(aEvent);
+      break;
+    case BandeEventKind::ImePreedit:
+    case BandeEventKind::ImeCommit:
+      DispatchComposition(aEvent);
       break;
     case BandeEventKind::Close:
       if (mWidgetListener) {

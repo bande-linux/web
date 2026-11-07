@@ -37,6 +37,8 @@ enum class BandeEventKind : uint32_t {
   DragLeave = 21,
   DragDrop = 22,
   DragFinished = 23,
+  ImePreedit = 24,
+  ImeCommit = 25,
 };
 
 enum BandeModifier : uint32_t {
@@ -109,6 +111,8 @@ class BandeHost final {
                         const char* const* aMimes, const uint8_t* const* aData,
                         const size_t* aLengths);
   static void AcceptDrag(uint64_t aWindow, uint32_t aAction);
+  static void SetTextInput(uint64_t aWindow, bool aEnabled, double aX,
+                           double aY, double aWidth, double aHeight);
   static void WatchFd(int aFd);
   static void UnwatchFd(int aFd);
   static bool Step(bool aBlock);

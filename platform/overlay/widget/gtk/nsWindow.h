@@ -129,7 +129,13 @@ class nsWindow final : public nsIWidget {
   void SetInputContext(const InputContext& aContext,
                        const InputContextAction&) override {
     mInputContext = aContext;
+    UpdateTextInput();
   }
+  void OnIMEFocus(bool aFocused) {
+    mIMEFocused = aFocused;
+    UpdateTextInput();
+  }
+  void UpdateTextInput();
   InputContext GetInputContext() override { return mInputContext; }
   TextEventDispatcherListener* GetNativeTextEventDispatcherListener() override;
   MOZ_CAN_RUN_SCRIPT bool GetEditCommands(
@@ -176,6 +182,7 @@ class nsWindow final : public nsIWidget {
   void DispatchPointer(const mozilla::widget::BandeEvent& aEvent);
   void DispatchScroll(const mozilla::widget::BandeEvent& aEvent);
   void DispatchKey(const mozilla::widget::BandeEvent& aEvent);
+  void DispatchComposition(const mozilla::widget::BandeEvent& aEvent);
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void DispatchDrag(const mozilla::widget::BandeEvent& aEvent);
   void DispatchFocus(bool aFocused);
   void DispatchToplevelState(uint32_t aState);
@@ -184,6 +191,7 @@ class nsWindow final : public nsIWidget {
   uint64_t mBandeWindow = 0;
   bool mGrabs = false;
   bool mActivated = false;
+  bool mIMEFocused = false;
   MozContainer mContainer;
   LayoutDeviceIntRect mBounds;
   LayoutDeviceIntRegion mOpaqueRegion;
