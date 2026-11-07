@@ -16,6 +16,7 @@ web-html.workspace = true
 web-image.workspace = true
 web-layout.workspace = true
 web-paint.workspace = true
+web-script.workspace = true
 web-style.workspace = true
 web-text.workspace = true
 

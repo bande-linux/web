@@ -14,6 +14,7 @@ use web_paint::{DisplayList, Item, Rect};
 
 pub const MAX_BODY: usize = 64 << 20;
 const MAX_STYLESHEETS: usize = 64;
+const MAX_FETCHES: usize = 128;
 const MAX_IMAGES: usize = 256;
 const MAX_FONTS: usize = 32;
 
@@ -70,6 +71,7 @@ struct Styling {
     fetches: Vec<(u64, String)>,
     arrived: Vec<(String, Vec<u8>)>,
     attempted: Vec<String>,
+    scripting: bool,
 }
 
 struct Renderer {
@@ -183,6 +185,12 @@ impl Renderer {
         let images = std::mem::take(&mut self.images);
         self.images_arrived
             .extend(images.into_iter().map(|(_, source)| (source, Vec::new())));
+        let web_fonts = std::mem::take(&mut self.web_fonts);
+        self.web_fonts_arrived.extend(
+            web_fonts
+                .into_iter()
+                .map(|(_, source)| (source, Vec::new())),
+        );
         if let Some(styling) = &mut self.styling {
             let fetches = std::mem::take(&mut styling.fetches);
             styling
@@ -274,6 +282,7 @@ impl Renderer {
                     fetches: Vec::new(),
                     arrived: Vec::new(),
                     attempted: Vec::new(),
+                    scripting: false,
                 });
             }
             ToRenderer::Resize { viewport } => {
@@ -345,10 +354,39 @@ impl Renderer {
         }
         if !styling.arrived.is_empty() {
             let arrived = std::mem::take(&mut styling.arrived);
-            styling
-                .shown
-                .page
-                .add_stylesheets(&borrowed(&arrived), fonts);
+            if styling.scripting {
+                styling.shown.page.add_scripts(&borrowed(&arrived));
+            } else {
+                styling
+                    .shown
+                    .page
+                    .add_stylesheets(&borrowed(&arrived), fonts);
+            }
+        }
+        if styling.scripting {
+            for src in styling.shown.page.script_links() {
+                if styling.attempted.contains(&src) || styling.attempted.len() >= MAX_FETCHES {
+                    styling.arrived.push((src, Vec::new()));
+                    continue;
+                }
+                styling.attempted.push(src.clone());
+                match resolved(&styling.shown.url, &src)
+                    .and_then(|url| self.fetch(url, Destination::Script))
+                {
+                    Some(id) => styling.fetches.push((id, src)),
+                    None => styling.arrived.push((src, Vec::new())),
+                }
+            }
+            if !styling.fetches.is_empty() || !styling.arrived.is_empty() {
+                self.styling = Some(styling);
+                return Ok(());
+            }
+            styling.shown.page.run_scripts(fonts);
+            let mut shown = styling.shown;
+            if std::mem::take(&mut self.resized) {
+                shown.page.resize(self.viewport.width, fonts);
+            }
+            return self.show(shown);
         }
         for href in styling.shown.page.stylesheet_links() {
             if styling.attempted.contains(&href) || styling.attempted.len() >= MAX_STYLESHEETS {
@@ -362,15 +400,18 @@ impl Renderer {
                 None => styling.arrived.push((href, Vec::new())),
             }
         }
-        if !styling.fetches.is_empty() || !styling.arrived.is_empty() {
-            self.styling = Some(styling);
-            return Ok(());
+        if styling.fetches.is_empty() && styling.arrived.is_empty() {
+            styling.scripting = true;
+            styling.attempted.clear();
+            return self.style_again(styling, fonts);
         }
-        let mut shown = styling.shown;
-        if std::mem::take(&mut self.resized) {
-            shown.page.resize(self.viewport.width, fonts);
-        }
-        self.show(shown)
+        self.styling = Some(styling);
+        Ok(())
+    }
+
+    fn style_again(&mut self, styling: Styling, fonts: &mut Fonts) -> io::Result<()> {
+        self.styling = Some(styling);
+        self.style(fonts)
     }
 
     fn show(&mut self, mut shown: Shown) -> io::Result<()> {

@@ -9,6 +9,7 @@ use web_html::{Options, Parser};
 use web_image::ImageCache;
 use web_layout::{BoxFragment, BoxTree, Fragment};
 use web_paint::DisplayList;
+use web_script::Script;
 use web_style::{Styles, Stylist};
 
 pub use web_style::Viewport;
@@ -29,6 +30,10 @@ pub struct Page {
     font_bytes: usize,
     tops: Vec<f32>,
     fragment_bytes: usize,
+    script: Option<Box<Script>>,
+    script_sources: Vec<(String, Option<String>)>,
+    scripts_run: bool,
+    console: Vec<String>,
 }
 
 const IMAGE_BUDGET: usize = 256 << 20;
@@ -117,6 +122,8 @@ pub fn render_file(path: &std::path::Path, width: u16, height: u16) -> std::io::
     let rgba = FONTS.with_borrow_mut(|fonts| {
         let mut page = Page::with_viewport(document, viewport, fonts);
         page.load_stylesheets_from(directory, fonts);
+        page.load_scripts_from(directory);
+        page.run_scripts(fonts);
         page.load_fonts_from(directory, fonts);
         page.load_images_from(directory, fonts);
         let rgba = page.display_list.rasterize(0.0, width, height);
@@ -132,6 +139,7 @@ pub fn render_file(path: &std::path::Path, width: u16, height: u16) -> std::io::
 
 const STYLESHEET_LIMIT: usize = 8 << 20;
 const FONT_BUDGET: usize = 64 << 20;
+const SCRIPT_LIMIT: usize = 16 << 20;
 
 impl Page {
     pub fn new(document: Document, width: f32, fonts: &mut Fonts) -> Self {
@@ -174,6 +182,10 @@ impl Page {
             font_bytes: 0,
             tops: Vec::new(),
             fragment_bytes: 0,
+            script: None,
+            script_sources: Vec::new(),
+            scripts_run: false,
+            console: Vec::new(),
         };
         page.relayout(fonts);
         page
@@ -328,6 +340,105 @@ impl Page {
                 .collect();
             self.add_fonts(&borrowed, fonts);
         }
+    }
+
+    pub fn script_links(&self) -> Vec<String> {
+        if self.scripts_run {
+            return Vec::new();
+        }
+        let mut links: Vec<String> = Vec::new();
+        for (_, source) in classic_scripts(&self.document) {
+            if let ScriptSource::External(src) = source
+                && !self.script_sources.iter().any(|(known, _)| *known == src)
+                && !links.contains(&src)
+            {
+                links.push(src);
+            }
+        }
+        links
+    }
+
+    pub fn add_scripts(&mut self, scripts: &[(&str, &[u8])]) {
+        for &(src, bytes) in scripts {
+            if self.script_sources.iter().any(|(known, _)| known == src) {
+                continue;
+            }
+            let text = (!bytes.is_empty()).then(|| {
+                String::from_utf8_lossy(
+                    bytes
+                        .get(..bytes.len().min(SCRIPT_LIMIT))
+                        .unwrap_or_default(),
+                )
+                .into_owned()
+            });
+            self.script_sources.push((src.to_owned(), text));
+        }
+    }
+
+    pub fn load_scripts_from(&mut self, directory: &std::path::Path) {
+        let files: Vec<(String, Vec<u8>)> = self
+            .script_links()
+            .into_iter()
+            .map(|src| {
+                let bytes = read_local(directory, &src).unwrap_or_default();
+                (src, bytes)
+            })
+            .collect();
+        let borrowed: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(src, bytes)| (src.as_str(), bytes.as_slice()))
+            .collect();
+        self.add_scripts(&borrowed);
+    }
+
+    pub fn run_scripts(&mut self, fonts: &mut Fonts) -> bool {
+        if self.scripts_run || !self.script_links().is_empty() {
+            return false;
+        }
+        self.scripts_run = true;
+        let scripts: Vec<String> = classic_scripts(&self.document)
+            .into_iter()
+            .filter_map(|(_, source)| match source {
+                ScriptSource::Inline(text) => Some(text),
+                ScriptSource::External(src) => self
+                    .script_sources
+                    .iter()
+                    .find(|(known, _)| *known == src)
+                    .and_then(|(_, text)| text.clone()),
+            })
+            .collect();
+        self.script_sources = Vec::new();
+        if scripts.is_empty() {
+            return false;
+        }
+        let script = match &mut self.script {
+            Some(script) => script,
+            None => match Script::new() {
+                Ok(script) => self.script.insert(Box::new(script)),
+                Err(error) => {
+                    self.console.push(format!("error: {error}"));
+                    return false;
+                }
+            },
+        };
+        let mut mutated = false;
+        for source in scripts {
+            let outcome = script.run(&mut self.document, &source);
+            mutated |= outcome.mutated;
+            if let Some(error) = outcome.error {
+                self.console.push(format!("error: {error}"));
+            }
+        }
+        let console = script.take_console();
+        self.console.extend(console);
+        if mutated {
+            self.restyle(fonts);
+        }
+        mutated
+    }
+
+    pub fn take_console(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.console)
     }
 
     pub fn release(&mut self, fonts: &mut Fonts) {
@@ -652,6 +763,57 @@ fn record_tops(document: &Document, fragment: &BoxFragment, y: f32, tops: &mut [
                 }
             }
         }
+    }
+}
+
+enum ScriptSource {
+    Inline(String),
+    External(String),
+}
+
+fn classic_scripts(document: &Document) -> Vec<(NodeId, ScriptSource)> {
+    let mut scripts = Vec::new();
+    let mut stack = vec![NodeId::DOCUMENT];
+    while let Some(node) = stack.pop() {
+        if document.html_element_name(node) == Some(Atom::SCRIPT) && is_classic(document, node) {
+            let source = match document.attribute(node, Atom::SRC) {
+                Some(src) if !src.trim().is_empty() => {
+                    ScriptSource::External(src.trim().to_owned())
+                }
+                Some(_) => continue,
+                None => ScriptSource::Inline(
+                    document
+                        .children(node)
+                        .filter_map(|child| document.text(child))
+                        .collect(),
+                ),
+            };
+            scripts.push((node, source));
+        }
+        let start = stack.len();
+        stack.extend(document.children(node));
+        if let Some(added) = stack.get_mut(start..) {
+            added.reverse();
+        }
+    }
+    scripts
+}
+
+fn is_classic(document: &Document, script: NodeId) -> bool {
+    match document.attribute(script, Atom::TYPE).map(str::trim) {
+        None | Some("") => true,
+        Some(kind) => matches!(
+            kind.to_ascii_lowercase().as_str(),
+            "text/javascript"
+                | "application/javascript"
+                | "application/ecmascript"
+                | "application/x-javascript"
+                | "text/ecmascript"
+                | "text/jscript"
+                | "text/livescript"
+                | "text/x-javascript"
+                | "text/x-ecmascript"
+        ),
     }
 }
 

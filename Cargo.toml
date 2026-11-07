@@ -26,6 +26,9 @@ web-ipc = { path = "crates/web-ipc" }
 web-renderer = { path = "crates/web-renderer" }
 web-netd = { path = "crates/web-netd" }
 web-host = { path = "crates/web-host" }
+web-script = { path = "crates/web-script" }
+boa_engine = { version = "0.22", default-features = false }
+boa_gc = "0.22"
 brotli-decompressor = "5"
 encoding_rs = "0.8"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
@@ -34,8 +37,8 @@ gif = "0.14"
 harfrust = "=0.12.0"
 hashbrown = { version = "0.16", default-features = false }
 hyper = { version = "1", features = ["client", "http1"] }
-icu_properties = "2.4"
-icu_segmenter = "2.4"
+icu_properties = "2.3"
+icu_segmenter = "2.3"
 image-webp = "0.2"
 jxl-oxide = { version = "=0.12.6", default-features = false }
 landlock = "0.4.4"

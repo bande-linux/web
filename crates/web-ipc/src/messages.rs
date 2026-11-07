@@ -17,6 +17,7 @@ wire_enum! {
         Style = 1,
         Image = 2,
         Font = 3,
+        Script = 4,
     }
 }
 

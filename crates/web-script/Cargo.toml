@@ -1,0 +1,21 @@
+[package]
+name = "web-script"
+description = "WebIDL bindings, Web APIs and the event loop over a narrow JavaScript engine module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+build = "build/main.rs"
+
+[dependencies]
+boa_engine.workspace = true
+boa_gc.workspace = true
+web-atoms.workspace = true
+web-dom.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+web-html.workspace = true

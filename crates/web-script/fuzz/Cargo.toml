@@ -1,0 +1,23 @@
+[package]
+name = "web-script-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+web-dom = { path = "../../web-dom" }
+web-html = { path = "../../web-html" }
+web-script = { path = ".." }
+
+[[bin]]
+name = "bindings"
+path = "fuzz_targets/bindings.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

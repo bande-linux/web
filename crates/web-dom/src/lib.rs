@@ -82,6 +82,7 @@ pub struct Document {
     idents: Vec<Ident>,
     class_atoms: Vec<Atom>,
     hover_chain: Vec<NodeId>,
+    garbage: usize,
 }
 
 impl Default for Document {
@@ -106,6 +107,7 @@ impl Document {
             idents: Vec::new(),
             class_atoms: Vec::new(),
             hover_chain: Vec::new(),
+            garbage: 0,
         };
         document.push(NodeKind::Document, Namespace::Html, Atom::HTML, EMPTY);
         document
@@ -164,6 +166,9 @@ impl Document {
     }
 
     fn update_ident(&mut self, element: NodeId) {
+        if let Some(node) = self.node_mut(element) {
+            node.ident = NO_IDENT;
+        }
         let id = self
             .attribute(element, Atom::ID)
             .filter(|id| !id.is_empty())
@@ -394,6 +399,125 @@ impl Document {
                 self.update_ident(element);
             }
         }
+    }
+
+    pub fn set_attribute(&mut self, element: NodeId, name: QualName, value: &str) {
+        let Some(node) = self.node(element).copied() else {
+            return;
+        };
+        if node.kind != NodeKind::Element {
+            return;
+        }
+        let range = node.data.start as usize..(node.data.start + node.data.len) as usize;
+        let existing = self
+            .attributes
+            .get(range)
+            .and_then(|slots| slots.iter().position(|slot| slot.name == name));
+        match existing {
+            Some(offset) => {
+                let index = node.data.start as usize + offset;
+                let value = push_span(&mut self.attribute_text, value);
+                if let Some(slot) = self.attributes.get_mut(index) {
+                    self.garbage += slot.value.len as usize;
+                    slot.value = value;
+                }
+            }
+            None => self.add_attributes_if_missing(element, [(name, value)]),
+        }
+        if name == QualName::attribute(Atom::ID) || name == QualName::attribute(Atom::CLASS) {
+            self.update_ident(element);
+        }
+        self.compact();
+    }
+
+    pub fn remove_attribute(&mut self, element: NodeId, name: QualName) -> bool {
+        let Some(node) = self.node(element).copied() else {
+            return false;
+        };
+        let range = node.data.start as usize..(node.data.start + node.data.len) as usize;
+        let Some(slots) = self.attributes.get(range) else {
+            return false;
+        };
+        let Some(offset) = slots.iter().position(|slot| slot.name == name) else {
+            return false;
+        };
+        let mut kept = slots.to_vec();
+        let removed = kept.remove(offset);
+        self.garbage += removed.value.len as usize;
+        let start = self.attributes.len() as u32;
+        let len = kept.len() as u32;
+        self.attributes.extend(kept);
+        if let Some(node) = self.node_mut(element) {
+            node.data = Span { start, len };
+        }
+        if name == QualName::attribute(Atom::ID) || name == QualName::attribute(Atom::CLASS) {
+            self.update_ident(element);
+        }
+        self.compact();
+        true
+    }
+
+    pub fn set_text(&mut self, id: NodeId, text: &str) {
+        let Some(node) = self.node(id).copied() else {
+            return;
+        };
+        if !matches!(
+            node.kind,
+            NodeKind::Text | NodeKind::Comment | NodeKind::ProcessingInstruction
+        ) {
+            return;
+        }
+        self.garbage += node.data.len as usize;
+        let data = push_span(&mut self.text, text);
+        if let Some(node) = self.node_mut(id) {
+            node.data = data;
+        }
+        self.compact();
+    }
+
+    fn compact(&mut self) {
+        let used = self.text.len() + self.attribute_text.len();
+        if self.garbage < COMPACT_MIN || self.garbage * 2 < used {
+            return;
+        }
+        self.garbage = 0;
+        let mut text = String::with_capacity(self.text.len() / 2);
+        for node in &mut self.nodes {
+            if matches!(
+                node.kind,
+                NodeKind::Text | NodeKind::Comment | NodeKind::ProcessingInstruction
+            ) {
+                let value = span_text(&self.text, node.data).to_owned();
+                node.data = push_span(&mut text, &value);
+            }
+        }
+        self.text = text;
+        let mut attribute_text = String::with_capacity(self.attribute_text.len() / 2);
+        let mut attributes = Vec::with_capacity(self.attributes.len());
+        for node in &mut self.nodes {
+            if node.kind != NodeKind::Element {
+                continue;
+            }
+            let start = attributes.len() as u32;
+            let range = node.data.start as usize..(node.data.start + node.data.len) as usize;
+            for slot in self.attributes.get(range).unwrap_or_default() {
+                let value = span_text(&self.attribute_text, slot.value);
+                attributes.push(AttributeSlot {
+                    name: slot.name,
+                    value: push_span(&mut attribute_text, value),
+                });
+            }
+            node.data = Span {
+                start,
+                len: node.data.len,
+            };
+        }
+        self.attribute_text = attribute_text;
+        self.attributes = attributes;
+    }
+
+    pub fn create_fragment(&mut self) -> NodeId {
+        self.push(NodeKind::Fragment, Namespace::Html, Atom::HTML, EMPTY)
     }
 
     pub fn create_text(&mut self, text: &str) -> NodeId {
@@ -628,6 +752,7 @@ impl TreeSink for Document {
 }
 
 const EMPTY: Span = Span { start: 0, len: 0 };
+const COMPACT_MIN: usize = 64 << 10;
 
 fn push_span(buffer: &mut String, text: &str) -> Span {
     let start = buffer.len() as u32;
