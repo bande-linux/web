@@ -54,6 +54,8 @@ class nsWindow final : public nsIWidget {
   void Invalidate(const LayoutDeviceIntRect& aRect) override;
   void* GetNativeData(uint32_t aDataType) override;
   nsresult SetTitle(const nsAString& aTitle) override;
+  void SetWindowClass(const nsAString& aType, const nsAString& aClass,
+                      const nsAString& aName) override;
   LayoutDeviceIntPoint WidgetToScreenOffset() override { return {}; }
   void SetCursor(const Cursor& aCursor) override;
   void SetInputContext(const InputContext& aContext,
@@ -110,6 +112,7 @@ class nsWindow final : public nsIWidget {
   LayoutDeviceIntRegion mOpaqueRegion;
   nsSizeMode mSizeMode = nsSizeMode_Normal;
   nsCString mTitle;
+  nsCString mAppId;
   InputContext mInputContext;
   mozilla::widget::PlatformCompositorWidgetDelegate* mCompositorWidgetDelegate =
       nullptr;

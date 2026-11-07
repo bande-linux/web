@@ -148,7 +148,10 @@ LayoutDeviceIntPoint nsWindow::ToDevice(double aX, double aY) const {
 
 void nsWindow::MapToplevel() {
   double scale = FractionalScaleFactor();
-  nsAutoCString appId(gAppData ? gAppData->remotingName : "org.bande.Browser");
+  nsAutoCString appId(mAppId);
+  if (appId.IsEmpty()) {
+    appId.Assign(gAppData ? gAppData->remotingName : "org.bande.Browser");
+  }
   mBandeWindow = BandeHost::Open(mTitle.get(), appId.get(),
                                  uint32_t(mBounds.width / scale),
                                  uint32_t(mBounds.height / scale));
@@ -354,6 +357,13 @@ nsresult nsWindow::SetTitle(const nsAString& aTitle) {
     BandeHost::SetTitle(mBandeWindow, mTitle.get());
   }
   return NS_OK;
+}
+
+void nsWindow::SetWindowClass(const nsAString&, const nsAString& aClass,
+                              const nsAString&) {
+  if (!aClass.IsEmpty()) {
+    CopyUTF16toUTF8(aClass, mAppId);
+  }
 }
 
 static uint32_t BandeCursorOf(nsCursor aCursor) {
