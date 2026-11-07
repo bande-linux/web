@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
-use bande_graphics::{Cursor, Event, Modifiers, PointerButton, ResizeEdge, Scene, ScrollSource};
+use bande_graphics::{Color, Cursor, Event, Modifiers, PointerButton, ResizeEdge, Scene, ScrollSource};
 use bande_toolkit_platform::{Role, Surfaces, Wait, Window, WindowEvent, step_surfaces};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client::{Connection, EventQueue};
@@ -297,7 +297,17 @@ impl Surfaces for Host {
     }
 
     fn scene(&mut self, _index: usize) -> Scene {
-        Scene::new(1, 1)
+        Scene {
+            width: 1,
+            height: 1,
+            background: Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
+            items: Vec::new(),
+        }
     }
 
     fn event(&mut self, index: usize, event: WindowEvent) {
