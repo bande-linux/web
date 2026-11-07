@@ -66,3 +66,10 @@ panic = "deny"
 
 [profile.dev]
 debug = "line-tables-only"
+
+[profile.perf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"

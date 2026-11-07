@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use encoding_rs::Encoding;
 use web_atoms::Atom;
@@ -29,6 +30,23 @@ pub struct Page {
     font_bytes: usize,
     tops: Vec<f32>,
     fragment_bytes: usize,
+    stages: Stages,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Stages {
+    pub stylesheets: Duration,
+    pub style: Duration,
+    pub boxes: Duration,
+    pub layout: Duration,
+    pub paint: Duration,
+}
+
+fn timed<T>(stage: &mut Duration, run: impl FnOnce() -> T) -> T {
+    let start = Instant::now();
+    let result = run();
+    *stage += start.elapsed();
+    result
 }
 
 const IMAGE_BUDGET: usize = 256 << 20;
@@ -147,9 +165,12 @@ impl Page {
         fonts.set_scope(scope);
         let mut stylist = Stylist::new(document.atoms_mut(), viewport);
         let mut imports = Vec::new();
+        let mut stages = Stages::default();
         for (index, (source, _)) in stylesheet_sources(&document).into_iter().enumerate() {
             if let Source::Inline(css) = source {
-                let sheet = parse_stylesheet(&css, document.atoms_mut());
+                let sheet = timed(&mut stages.stylesheets, || {
+                    parse_stylesheet(&css, document.atoms_mut())
+                });
                 let position = sheet_position(index);
                 for (offset, url) in self::imports(&sheet).into_iter().enumerate() {
                     imports.push((url, import_position(position, offset)));
@@ -157,8 +178,10 @@ impl Page {
                 stylist.add_sheet(sheet, position);
             }
         }
-        let styles = Styles::compute(&document, &stylist);
-        let boxes = BoxTree::build(&document, &styles, fonts);
+        let styles = timed(&mut stages.style, || Styles::compute(&document, &stylist));
+        let boxes = timed(&mut stages.boxes, || {
+            BoxTree::build(&document, &styles, fonts)
+        });
         let mut page = Page {
             document,
             styles,
@@ -174,6 +197,7 @@ impl Page {
             font_bytes: 0,
             tops: Vec::new(),
             fragment_bytes: 0,
+            stages,
         };
         page.relayout(fonts);
         page
@@ -457,9 +481,11 @@ impl Page {
             let bytes = bytes
                 .get(..bytes.len().min(STYLESHEET_LIMIT))
                 .unwrap_or_default();
-            let (css, _) = web_css::decode_stylesheet(bytes, None, None);
-            let mut sheet = parse_stylesheet(&css, self.document.atoms_mut());
-            drop(css);
+            let document = &mut self.document;
+            let mut sheet = timed(&mut self.stages.stylesheets, || {
+                let (css, _) = web_css::decode_stylesheet(bytes, None, None);
+                parse_stylesheet(&css, document.atoms_mut())
+            });
             rebase_urls(&mut sheet.rules, href);
             for (offset, url) in imports(&sheet).into_iter().enumerate() {
                 let url = resolve_relative(href, &url);
@@ -477,8 +503,12 @@ impl Page {
         self.display_list = Arc::default();
         self.boxes = BoxTree::default();
         self.stylist.set_viewport(self.viewport);
-        self.styles = Styles::compute(&self.document, &self.stylist);
-        self.boxes = BoxTree::build(&self.document, &self.styles, fonts);
+        self.styles = timed(&mut self.stages.style, || {
+            Styles::compute(&self.document, &self.stylist)
+        });
+        self.boxes = timed(&mut self.stages.boxes, || {
+            BoxTree::build(&self.document, &self.styles, fonts)
+        });
         self.relayout(fonts);
     }
 
@@ -486,11 +516,13 @@ impl Page {
         fonts.set_scope(self.scope);
         self.display_list = Arc::default();
         let images = &self.images;
-        let fragments = self.boxes.layout(
-            (self.viewport.width, self.viewport.height),
-            fonts,
-            &|source| images.size(source),
-        );
+        let fragments = timed(&mut self.stages.layout, || {
+            self.boxes.layout(
+                (self.viewport.width, self.viewport.height),
+                fonts,
+                &|source| images.size(source),
+            )
+        });
         let mut displayed: Vec<(Arc<str>, f32, f32)> = Vec::new();
         displayed_images(&fragments.root, &mut displayed);
         for (source, width, height) in &displayed {
@@ -500,12 +532,11 @@ impl Page {
         let shown: Vec<&str> = displayed.iter().map(|(source, _, _)| &**source).collect();
         self.images.keep_only(&shown);
         let images = &self.images;
-        self.display_list = Arc::new(DisplayList::build(
-            &fragments,
-            fonts,
-            self.viewport.width,
-            &|source| images.get(source).cloned(),
-        ));
+        self.display_list = Arc::new(timed(&mut self.stages.paint, || {
+            DisplayList::build(&fragments, fonts, self.viewport.width, &|source| {
+                images.get(source).cloned()
+            })
+        }));
         self.tops.clear();
         self.tops.resize(self.document.len(), f32::NAN);
         record_tops(&self.document, &fragments.root, 0.0, &mut self.tops);
@@ -611,6 +642,10 @@ impl Page {
             stack[start..].reverse();
         }
         None
+    }
+
+    pub fn stages(&self) -> Stages {
+        self.stages
     }
 
     pub fn memory(&self) -> Memory {

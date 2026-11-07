@@ -11,8 +11,10 @@ name = "bench"
 path = "src/main.rs"
 
 [dependencies]
-web-content.workspace = true
-web-css.workspace = true
+rustix = { workspace = true, features = ["event", "process", "time"] }
+web-content = { workspace = true, features = ["avif", "raster"] }
+web-host.workspace = true
+web-paint = { workspace = true, features = ["raster"] }
 
 [lints]
 workspace = true
