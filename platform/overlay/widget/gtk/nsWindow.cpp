@@ -4,8 +4,6 @@
 
 #include "nsWindow.h"
 
-#include <linux/input-event-codes.h>
-
 #include "BandeKeys.h"
 #include "NativeKeyBindings.h"
 #include "GtkCompositorWidget.h"
@@ -27,7 +25,7 @@
 #include "nsAppRunner.h"
 #include "nsTHashMap.h"
 #include "nsXULAppAPI.h"
-#include "PreferenceSheet.h"
+#include "mozilla/PreferenceSheet.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;

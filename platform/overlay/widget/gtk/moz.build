@@ -52,7 +52,6 @@ UNIFIED_SOURCES += [
     "CompositorWidgetParent.cpp",
     "DMABufDevice.cpp",
     "DMABufFormats.cpp",
-    "DMABufSurface.cpp",
     "GfxInfo.cpp",
     "GtkCompositorWidget.cpp",
     "InProcessGtkCompositorWidget.cpp",
@@ -72,6 +71,7 @@ UNIFIED_SOURCES += [
 ]
 
 SOURCES += [
+    "DMABufSurface.cpp",
     "MediaKeysEventSourceFactory.cpp",
     "nsWindow.cpp",
     "WaylandVsyncSource.cpp",

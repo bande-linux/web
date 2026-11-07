@@ -21,6 +21,14 @@
 using namespace mozilla;
 using namespace mozilla::widget;
 
+LazyLogModule gWidgetLog("Widget");
+LazyLogModule gWidgetDragLog("WidgetDrag");
+LazyLogModule gWidgetWaylandLog("WidgetWayland");
+LazyLogModule gWidgetPopupLog("WidgetPopup");
+LazyLogModule gWidgetVsync("WidgetVSync");
+LazyLogModule gDmabufLog("Dmabuf");
+LazyLogModule gWidgetCompositorLog("WidgetCompositor");
+
 static Atomic<bool> sTermRequested(false);
 static int sSignalWakeFd = -1;
 

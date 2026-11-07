@@ -9,11 +9,6 @@
 #include "mozilla/WidgetUtils.h"
 
 namespace mozilla {
-
-int32_t WidgetUtils::IsTouchDeviceSupportPresent() {
-  return widget::WidgetUtilsGTK::IsTouchDeviceSupportPresent();
-}
-
 namespace widget {
 
 int32_t WidgetUtilsGTK::IsTouchDeviceSupportPresent() { return 0; }

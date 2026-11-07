@@ -15,6 +15,62 @@
 #include "mozilla/widget/WindowSurfaceProvider.h"
 #include "nsIWidget.h"
 
+#ifdef MOZ_LOGGING
+#  undef LOG
+#  undef LOGVERBOSE
+
+#  include "mozilla/Logging.h"
+#  include "nsTArray.h"
+#  include "Units.h"
+
+extern mozilla::LazyLogModule gWidgetLog;
+extern mozilla::LazyLogModule gWidgetDragLog;
+extern mozilla::LazyLogModule gWidgetPopupLog;
+extern mozilla::LazyLogModule gWidgetVsync;
+extern mozilla::LazyLogModule gWidgetWaylandLog;
+
+#  define LOG_WIN(win, str, ...)                           \
+    MOZ_LOG(win->IsPopup() ? gWidgetPopupLog : gWidgetLog, \
+            mozilla::LogLevel::Debug,                      \
+            ("%s: " str, win->GetDebugTag().get(), ##__VA_ARGS__))
+#  define LOG(...) LOG_WIN(this, __VA_ARGS__)
+#  define LOGVERBOSE(str, ...)                        \
+    MOZ_LOG(IsPopup() ? gWidgetPopupLog : gWidgetLog, \
+            mozilla::LogLevel::Verbose,               \
+            ("%s: " str, GetDebugTag().get(), ##__VA_ARGS__))
+#  define LOGW(...) MOZ_LOG(gWidgetLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+#  define LOGDRAG(...) \
+    MOZ_LOG(gWidgetDragLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+#  define LOG_POPUP(...) \
+    MOZ_LOG(gWidgetPopupLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+#  define LOG_VSYNC(str, ...)                       \
+    MOZ_LOG(gWidgetVsync, mozilla::LogLevel::Debug, \
+            ("%s: " str, GetDebugTag().get(), ##__VA_ARGS__))
+#  define LOG_ENABLED()                                         \
+    (MOZ_LOG_TEST(gWidgetPopupLog, mozilla::LogLevel::Debug) || \
+     MOZ_LOG_TEST(gWidgetLog, mozilla::LogLevel::Debug))
+#  define LOG_ENABLED_VERBOSE()                                   \
+    (MOZ_LOG_TEST(gWidgetPopupLog, mozilla::LogLevel::Verbose) || \
+     MOZ_LOG_TEST(gWidgetLog, mozilla::LogLevel::Verbose))
+#  define LOG_WAYLAND(...) \
+    MOZ_LOG(gWidgetWaylandLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+
+#else
+
+#  define LOG(...)
+#  define LOG_WIN(...)
+#  define LOGVERBOSE(...)
+#  define LOGW(...)
+#  define LOGDRAG(...)
+#  define LOG_POPUP(...)
+#  define LOG_ENABLED() false
+
+#endif /* MOZ_LOGGING */
+
+#if defined(MOZ_WAYLAND) && !defined(MOZ_X11)
+typedef uintptr_t Window;
+#endif
+
 namespace mozilla::widget {
 class PlatformCompositorWidgetDelegate;
 class WaylandVsyncSource;

@@ -5,6 +5,7 @@
 #ifndef mozilla_widget_GSettings_h
 #define mozilla_widget_GSettings_h
 
+#include "mozilla/Maybe.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
@@ -16,6 +17,8 @@ class Collection final {
   explicit operator bool() const { return false; }
   bool GetString(const nsACString&, nsACString&) { return false; }
   bool GetStringList(const nsACString&, nsTArray<nsCString>&) { return false; }
+  Maybe<int32_t> GetInt(const nsACString&) { return Nothing(); }
+  Maybe<bool> GetBoolean(const nsACString&) { return Nothing(); }
 };
 
 inline bool GetString(const nsACString&, const nsACString&, nsACString&) {
