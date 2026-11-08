@@ -5,7 +5,6 @@
 #include "nsLookAndFeel.h"
 
 #include "mozilla/Base64.h"
-#include "mozilla/Logging.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/widget/ThemeChangeKind.h"
 #include "nsIURI.h"
@@ -16,7 +15,6 @@
 using namespace mozilla;
 using namespace mozilla::widget;
 
-static LazyLogModule sAppearanceLog("BandeAppearance");
 static BandeAppearance sAppearance;
 static bool sHaveAppearance = false;
 static StaticRefPtr<nsIURI> sSheet;
@@ -97,11 +95,10 @@ static void RegisterSheet(const BandeAppearance& aAppearance) {
   if (sSheet) {
     service->UnregisterSheet(sSheet, nsIStyleSheetService::AGENT_SHEET);
   }
-  const nsresult rv =
-      service->LoadAndRegisterSheet(uri, nsIStyleSheetService::AGENT_SHEET);
-  MOZ_LOG(sAppearanceLog, LogLevel::Debug,
-          ("sheet registered %x", uint32_t(rv)));
-  sSheet = NS_SUCCEEDED(rv) ? uri.get() : nullptr;
+  sSheet = NS_SUCCEEDED(service->LoadAndRegisterSheet(
+               uri, nsIStyleSheetService::AGENT_SHEET))
+               ? uri.get()
+               : nullptr;
 }
 
 void nsLookAndFeel::HandleAppearanceChanged() {
@@ -109,11 +106,6 @@ void nsLookAndFeel::HandleAppearanceChanged() {
   if (!BandeHost::GetAppearance(&appearance)) {
     return;
   }
-  MOZ_LOG(sAppearanceLog, LogLevel::Debug,
-          ("appearance dark=%u translucent=%u frame=%08x", appearance.dark,
-           appearance.translucent,
-           appearance.dark ? appearance.darkPalette.frame
-                           : appearance.light.frame));
   sAppearance = appearance;
   sHaveAppearance = true;
   RegisterSheet(appearance);
@@ -133,7 +125,6 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
     case IntID::SystemUsesDarkTheme:
       if (appearance) {
         aResult = appearance->dark ? 1 : 0;
-        MOZ_LOG(sAppearanceLog, LogLevel::Debug, ("dark asked: %d", aResult));
         return NS_OK;
       }
       break;

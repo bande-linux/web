@@ -455,7 +455,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  
  #  ifdef MOZ_LOGGING
  #    include "mozilla/Logging.h"
-@@ -132,17 +132,17 @@
+@@ -132,30 +132,68 @@
    MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
    if (!mHiddenWindowTimerID) {
      LOG("WaylandVsyncSource::SetHiddenWindowVSync()");
@@ -477,21 +477,92 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
          },
          this);
    }
-@@ -155,7 +155,7 @@
+ }
+ 
++void WaylandVsyncSource::ArmStallGuardLocked(
++    const MutexAutoLock& aProofOfLock) {
++  MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
++  mMutex.AssertCurrentThreadOwns();
++  if (mStallTimerID) {
++    return;
++  }
++  mStallTimerID = BandeTimeoutAdd(
++      uint32_t(mVsyncRate.ToMilliseconds() * 2) + 1,
++      [](void* data) -> bool {
++        RefPtr vsync = static_cast<WaylandVsyncSource*>(data);
++        return vsync->StallGuardCallback();
++      },
++      this);
++}
++
++bool WaylandVsyncSource::StallGuardCallback() {
++  MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
++  TimeStamp lastVSync;
++  TimeStamp outputTimestamp;
++  {
++    MutexAutoLock lock(mMutex);
++    const auto now = TimeStamp::Now();
++    if (!mVsyncEnabled || !mVsyncSourceEnabled || mIsShutdown ||
++        now - mLastVsyncTimeStamp < mVsyncRate * 2) {
++      mStallTimerID = 0;
++      return false;
++    }
++    LOG("WaylandVsyncSource::StallGuardCallback() no frame callback, emulate");
++    mLastVsyncTimeStamp = lastVSync = now;
++    outputTimestamp = now + mVsyncRate;
++  }
++  NotifyVsync(lastVSync, outputTimestamp);
++  return true;
++}
++
+ void WaylandVsyncSource::SetVSyncEventsStateLocked(
+     const MutexAutoLock& aProofOfLock, bool aEnabled) {
+   MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
+   mMutex.AssertCurrentThreadOwns();
    if (aEnabled) {
      mLastVsyncTimeStamp = TimeStamp::Now();
++    ArmStallGuardLocked(aProofOfLock);
    } else {
 -    MozClearHandleID(mHiddenWindowTimerID, g_source_remove);
 +    MozClearHandleID(mHiddenWindowTimerID, BandeTimeoutRemove);
++    MozClearHandleID(mStallTimerID, BandeTimeoutRemove);
    }
    WaylandSurfaceLock lock(mWaylandSurface);
    mWaylandSurface->SetVSyncCallbackStateLocked(lock, aEnabled);
-@@ -371,7 +371,7 @@
+@@ -245,9 +283,6 @@
+     window = mWindow;
+   }
+ 
+-  // This could disable vsync.
+-  window->NotifyOcclusionState(OcclusionState::OCCLUDED);
+-
+   if (window->IsDestroyed()) {
+     return false;
+   }
+@@ -269,14 +304,8 @@
+ #  endif
+   MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
+ 
+-  {
+-    // This might enable vsync.
+-    RefPtr window = mWindow;
+-    window->NotifyOcclusionState(OcclusionState::VISIBLE);
+-    // NotifyOcclusionState can destroy us.
+-    if (window->IsDestroyed()) {
+-      return;
+-    }
++  if (mWindow->IsDestroyed()) {
++    return;
+   }
+ 
+   MutexAutoLock lock(mMutex);
+@@ -371,7 +400,8 @@
    mIsShutdown = true;
    mVsyncEnabled = false;
    mVsyncSourceEnabled = false;
 -  MozClearHandleID(mHiddenWindowTimerID, g_source_remove);
 +  MozClearHandleID(mHiddenWindowTimerID, BandeTimeoutRemove);
++  MozClearHandleID(mStallTimerID, BandeTimeoutRemove);
  }
  
  }  // namespace mozilla
@@ -506,13 +577,23 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  namespace mozilla {
  
  using layers::NativeLayerRootWayland;
-@@ -101,8 +103,8 @@
+@@ -82,6 +84,8 @@
+   void* GetWindowForLogging() { return mWindow; };
+ 
+   void SetHiddenWindowVSync();
++  void ArmStallGuardLocked(const MutexAutoLock& aProofOfLock);
++  bool StallGuardCallback();
+ 
+   void SetVSyncEventsStateLocked(const MutexAutoLock& aProofOfLock,
+                                  bool aEnabled);
+@@ -101,8 +105,9 @@
    uint32_t mLastTime MOZ_GUARDED_BY(mMutex) = 0;
    bool mLastTimeEmulated MOZ_GUARDED_BY(mMutex) = false;
  
 -  guint mHiddenWindowTimerID = 0;    // Main thread only.
 -  const guint mHiddenWindowTimeout;  // Main thread only.
 +  uint32_t mHiddenWindowTimerID = 0;    // Main thread only.
++  uint32_t mStallTimerID = 0;
 +  const uint32_t mHiddenWindowTimeout;  // Main thread only.
  };
  

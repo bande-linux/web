@@ -20,8 +20,6 @@ using namespace mozilla;
 using namespace mozilla::widget;
 
 static StaticRefPtr<nsDragService> sDragService;
-static LazyLogModule sDragLog("BandeDrag");
-
 already_AddRefed<nsDragService> nsDragService::GetInstance() {
   if (!sDragService) {
     sDragService = new nsDragService();
@@ -51,9 +49,6 @@ nsresult nsDragSession::InvokeDragSessionImpl(
   nsCOMPtr<nsITransferable> transferable =
       do_QueryElementAt(aTransferables, 0);
   nsWindow* window = nsWindow::FromWidget(aWidget);
-  MOZ_LOG(sDragLog, LogLevel::Debug,
-          ("invoke drag: transferable %p window %p bande %llu", transferable.get(),
-           window, window ? (unsigned long long)window->BandeWindow() : 0ULL));
   if (!transferable || !window || !window->BandeWindow()) {
     return NS_ERROR_FAILURE;
   }

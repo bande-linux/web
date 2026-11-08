@@ -34,7 +34,6 @@ LazyLogModule gWidgetVsync("WidgetVSync");
 LazyLogModule gDmabufLog("Dmabuf");
 LazyLogModule gWidgetCompositorLog("WidgetCompositor");
 
-static LazyLogModule sEventLog("BandeEvents");
 static Atomic<bool> sTermRequested(false);
 static int sSignalWakeFd = -1;
 
@@ -110,9 +109,6 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
   handled |= wl_display_dispatch_pending(display) > 0;
   BandeEvent event;
   while (BandeHost::NextEvent(&event)) {
-    MOZ_LOG(sEventLog, LogLevel::Verbose,
-            ("event %u window %llu a=%u b=%u", uint32_t(event.kind),
-             (unsigned long long)event.window, event.a, event.b));
     handled = true;
     if (event.kind == BandeEventKind::Wake) {
       QuitIfTermRequested();

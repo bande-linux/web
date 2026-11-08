@@ -159,6 +159,7 @@ class nsWindow final : public nsIWidget {
   mozilla::UniquePtr<mozilla::widget::WaylandSurfaceLock> LockSurface();
   LayoutDeviceIntRegion GetOpaqueRegion() const { return mOpaqueRegion; }
   void UpdateOpaqueRegion(const LayoutDeviceIntRegion& aRegion) override;
+  void NotifyOcclusionState(mozilla::widget::OcclusionState aState) override;
   void SetTransparencyMode(TransparencyMode aMode) override;
   TransparencyMode GetTransparencyMode() override;
   void DidGetNonBlankPaint() override;
@@ -196,6 +197,7 @@ class nsWindow final : public nsIWidget {
   uint64_t mBandeWindow = 0;
   bool mGrabs = false;
   bool mActivated = false;
+  bool mOccluded = false;
   bool mIMEFocused = false;
   bool mComposing = false;
   bool mPaintPending = false;

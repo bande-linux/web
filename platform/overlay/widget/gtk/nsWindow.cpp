@@ -786,12 +786,7 @@ void nsWindow::DispatchKey(const BandeEvent& aEvent) {
   }
 }
 
-static LazyLogModule sDragLog("BandeDrag");
-
 void nsWindow::DispatchDrag(const BandeEvent& aEvent) {
-  MOZ_LOG(sDragLog, LogLevel::Debug,
-          ("drag event %u at %f,%f a=%u len=%zu", uint32_t(aEvent.kind),
-           aEvent.x, aEvent.y, aEvent.a, aEvent.len));
   RefPtr<nsDragService> service = nsDragService::GetInstance();
   RefPtr<nsDragSession> session =
       static_cast<nsDragSession*>(service->GetCurrentSession(this));
@@ -809,7 +804,6 @@ void nsWindow::DispatchDrag(const BandeEvent& aEvent) {
     session->GetCanDrop(&canDrop);
     uint32_t action = nsIDragService::DRAGDROP_ACTION_NONE;
     session->GetDragAction(&action);
-    MOZ_LOG(sDragLog, LogLevel::Debug, ("reply canDrop %d action %u", canDrop, action));
     BandeHost::AcceptDrag(mBandeWindow,
                           !canDrop ? 0
                           : (action & nsIDragService::DRAGDROP_ACTION_MOVE) ? 2
@@ -915,14 +909,7 @@ static uint32_t Utf16Offset(const nsACString& aUtf8, uint32_t aBytes) {
       .Length();
 }
 
-static LazyLogModule sImeLog("BandeIME");
-
 void nsWindow::DispatchComposition(const BandeEvent& aEvent) {
-  MOZ_LOG(sImeLog, LogLevel::Debug,
-          ("%s '%s' composing %d dispatcher %d",
-           aEvent.kind == BandeEventKind::ImeCommit ? "commit" : "preedit",
-           aEvent.text ? aEvent.text : "", mComposing,
-           GetTextEventDispatcher()->IsComposing()));
   RefPtr<TextEventDispatcher> dispatcher = GetTextEventDispatcher();
   if (NS_FAILED(dispatcher->BeginNativeInputTransaction())) {
     return;
@@ -932,9 +919,7 @@ void nsWindow::DispatchComposition(const BandeEvent& aEvent) {
   nsEventStatus status = nsEventStatus_eIgnore;
   if (aEvent.kind == BandeEventKind::ImeCommit) {
     mComposing = false;
-    nsresult rv = dispatcher->CommitComposition(status, &text);
-    MOZ_LOG(sImeLog, LogLevel::Debug,
-            ("commit rv %x status %d", uint32_t(rv), int(status)));
+    dispatcher->CommitComposition(status, &text);
     return;
   }
   if (text.IsEmpty()) {
@@ -968,7 +953,23 @@ void nsWindow::DispatchFocus(bool aFocused) {
   }
 }
 
+void nsWindow::NotifyOcclusionState(OcclusionState aState) {
+  const bool occluded = aState == OcclusionState::OCCLUDED;
+  if (IsPopup() || occluded == mOccluded) {
+    return;
+  }
+  mOccluded = occluded;
+  if (mWidgetListener) {
+    mWidgetListener->OcclusionStateChanged(occluded);
+  }
+}
+
 void nsWindow::DispatchToplevelState(uint32_t aState) {
+  NotifyOcclusionState(aState & BandeStateSuspended ? OcclusionState::OCCLUDED
+                                                    : OcclusionState::VISIBLE);
+  if (mIsDestroyed) {
+    return;
+  }
   const bool activated = aState & BandeStateActivated;
   if (activated != mActivated) {
     mActivated = activated;
