@@ -116,7 +116,7 @@ class nsWindow final : public nsIWidget {
   nsresult MakeFullScreen(bool aFullScreen) override;
   void Enable(bool aState) override { mEnabled = aState; }
   bool IsEnabled() const override { return mEnabled; }
-  void SetFocus(Raise, mozilla::dom::CallerType) override {}
+  void SetFocus(Raise aRaise, mozilla::dom::CallerType) override;
   LayoutDeviceIntRect GetBounds() override { return mBounds; }
   LayoutDeviceIntSize GetClientSize() override { return mBounds.Size(); }
   void Invalidate(const LayoutDeviceIntRect& aRect) override;

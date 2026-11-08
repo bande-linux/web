@@ -16,6 +16,7 @@ if CONFIG["MOZ_ENABLE_VULKAN_VIDEO"]:
 EXPORTS += [
     "MozContainer.h",
     "nsAppShell.h",
+    "nsGTKToolkit.h",
     "nsGtkUtils.h",
 ]
 
@@ -26,6 +27,7 @@ EXPORTS.mozilla += [
 ]
 
 EXPORTS.mozilla.widget += [
+    "BandeHost.h",
     "CompositorWidgetChild.h",
     "CompositorWidgetParent.h",
     "DMABufDevice.h",
@@ -50,6 +52,7 @@ UNIFIED_SOURCES += [
     "BandeKeys.cpp",
     "BandePortal.cpp",
     "BandeTimers.cpp",
+    "BandeWakeLock.cpp",
     "CompositorWidgetChild.cpp",
     "CompositorWidgetParent.cpp",
     "DMABufDevice.cpp",

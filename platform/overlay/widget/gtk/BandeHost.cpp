@@ -46,6 +46,17 @@ static LazyLogModule sBandeLog("Bande");
   X(screencast, void, uint64_t, uint32_t, uint32_t, uint32_t, const char*) \
   X(camera, void, uint64_t)                                            \
   X(portal_stop, void, uint64_t)                                       \
+  X(remote_send, bool, const char*, const char*, const char*, const uint8_t*, size_t) \
+  X(remote_serve, bool, const char*, const char*, const char*)         \
+  X(activate, void, uint64_t, const char*)                             \
+  X(inhibit, uint64_t, uint32_t, const char*)                          \
+  X(uninhibit, void, uint64_t)                                         \
+  X(mpris_open, bool, const char*, const char*, const char*)           \
+  X(mpris_close, void)                                                 \
+  X(mpris_status, void, uint32_t)                                      \
+  X(mpris_track, void, const char*, const char*, const char*, const char*) \
+  X(mpris_keys, void, uint32_t)                                        \
+  X(mpris_position, void, double, double, double)                      \
   X(set_blur, void, uint64_t, double, double, double, double)          \
   X(accept_drag, void, uint64_t, uint32_t)                             \
   X(paste, bool, const char*)                                          \
@@ -80,11 +91,7 @@ static void* OpenLibrary() {
   return library;
 }
 
-bool BandeHost::Start() {
-  if (sTried) {
-    return !!sDisplay;
-  }
-  sTried = true;
+static bool LoadFunctions() {
   void* library = OpenLibrary();
   if (!library) {
     return false;
@@ -96,6 +103,22 @@ bool BandeHost::Start() {
     return false;                                                 \
   }
   BANDE_FUNCTIONS(BANDE_LOOKUP)
+  return true;
+}
+
+bool BandeHost::Load() {
+  static const bool sLoaded = LoadFunctions();
+  return sLoaded;
+}
+
+bool BandeHost::Start() {
+  if (sTried) {
+    return !!sDisplay;
+  }
+  sTried = true;
+  if (!Load()) {
+    return false;
+  }
   int fds[2];
   if (pipe2(fds, O_NONBLOCK | O_CLOEXEC)) {
     return false;
@@ -189,6 +212,53 @@ void BandeHost::ScreenCast(uint64_t aRequest, uint32_t aSources,
 }
 void BandeHost::Camera(uint64_t aRequest) { s_camera(aRequest); }
 void BandeHost::PortalStop(uint64_t aRequest) { s_portal_stop(aRequest); }
+bool BandeHost::RemoteSend(const char* aName, const char* aPath,
+                           const char* aInterface, const uint8_t* aCommand,
+                           size_t aLength) {
+  return Load() && s_remote_send(aName, aPath, aInterface, aCommand, aLength);
+}
+static void (*sRemoteHandler)(const uint8_t*, size_t) = nullptr;
+bool BandeHost::RemoteServe(const char* aName, const char* aPath,
+                            const char* aInterface,
+                            void (*aHandler)(const uint8_t*, size_t)) {
+  if (!IsActive() || !s_remote_serve(aName, aPath, aInterface)) {
+    return false;
+  }
+  sRemoteHandler = aHandler;
+  return true;
+}
+void BandeHost::RemoteStop() { sRemoteHandler = nullptr; }
+void BandeHost::HandleRemote(const uint8_t* aCommand, size_t aLength) {
+  if (sRemoteHandler) {
+    sRemoteHandler(aCommand, aLength);
+  }
+}
+uint64_t BandeHost::Inhibit(uint32_t aFlags, const char* aReason) {
+  return IsActive() ? s_inhibit(aFlags, aReason) : 0;
+}
+void BandeHost::Uninhibit(uint64_t aInhibitor) {
+  if (IsActive()) {
+    s_uninhibit(aInhibitor);
+  }
+}
+bool BandeHost::MprisOpen(const char* aName, const char* aIdentity,
+                          const char* aDesktopEntry) {
+  return IsActive() && s_mpris_open(aName, aIdentity, aDesktopEntry);
+}
+void BandeHost::MprisClose() { s_mpris_close(); }
+void BandeHost::MprisStatus(uint32_t aStatus) { s_mpris_status(aStatus); }
+void BandeHost::MprisTrack(const char* aTitle, const char* aArtist,
+                           const char* aAlbum, const char* aArt) {
+  s_mpris_track(aTitle, aArtist, aAlbum, aArt);
+}
+void BandeHost::MprisKeys(uint32_t aKeys) { s_mpris_keys(aKeys); }
+void BandeHost::MprisPosition(double aDuration, double aPosition,
+                              double aRate) {
+  s_mpris_position(aDuration, aPosition, aRate);
+}
+void BandeHost::Activate(uint64_t aWindow, const char* aToken) {
+  s_activate(aWindow, aToken);
+}
 bool BandeHost::GetAppearance(BandeAppearance* aOut) {
   return s_appearance(aOut);
 }

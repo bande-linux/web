@@ -131,3 +131,26 @@ pub(crate) fn print(parent: &str, title: &str, path: &str) -> Option<u32> {
         .ok()?;
     Some(code)
 }
+
+const INHIBIT: &str = "org.freedesktop.portal.Inhibit";
+
+pub(crate) fn inhibit(flags: u32, reason: &str, stop: std::sync::mpsc::Receiver<()>) {
+    let Ok(session) = Connection::session() else {
+        return;
+    };
+    let Ok(inhibitor) = Proxy::new(&session, PORTAL, PORTAL_PATH, INHIBIT) else {
+        return;
+    };
+    let token = request_token();
+    let mut options: HashMap<&str, Value<'_>> = HashMap::new();
+    options.insert("handle_token", Value::from(token.as_str()));
+    options.insert("reason", Value::from(reason));
+    let Ok(request) = inhibitor.call::<_, _, OwnedObjectPath>("Inhibit", &("", flags, options))
+    else {
+        return;
+    };
+    let _ = stop.recv();
+    if let Ok(request) = Proxy::new(&session, PORTAL, request, REQUEST) {
+        let _: zbus::Result<()> = request.call("Close", &());
+    }
+}

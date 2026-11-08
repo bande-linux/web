@@ -43,6 +43,8 @@ enum class BandeEventKind : uint32_t {
   ScreenCast = 27,
   ScreenCastClosed = 28,
   Camera = 29,
+  Remote = 30,
+  MediaKey = 31,
 };
 
 enum BandeModifier : uint32_t {
@@ -116,6 +118,7 @@ struct BandeAppearance {
 
 class BandeHost final {
  public:
+  static bool Load();
   static bool Start();
   static bool IsActive();
   static wl_display* Display();
@@ -154,6 +157,25 @@ class BandeHost final {
   static void AcceptDrag(uint64_t aWindow, uint32_t aAction);
   static void PrintPdf(const char* aTitle, const char* aPath);
   static bool GetAppearance(BandeAppearance* aOut);
+  static bool RemoteSend(const char* aName, const char* aPath,
+                         const char* aInterface, const uint8_t* aCommand,
+                         size_t aLength);
+  static bool RemoteServe(const char* aName, const char* aPath,
+                          const char* aInterface,
+                          void (*aHandler)(const uint8_t*, size_t));
+  static void RemoteStop();
+  static void HandleRemote(const uint8_t* aCommand, size_t aLength);
+  static void Activate(uint64_t aWindow, const char* aToken);
+  static uint64_t Inhibit(uint32_t aFlags, const char* aReason);
+  static bool MprisOpen(const char* aName, const char* aIdentity,
+                        const char* aDesktopEntry);
+  static void MprisClose();
+  static void MprisStatus(uint32_t aStatus);
+  static void MprisTrack(const char* aTitle, const char* aArtist,
+                         const char* aAlbum, const char* aArt);
+  static void MprisKeys(uint32_t aKeys);
+  static void MprisPosition(double aDuration, double aPosition, double aRate);
+  static void Uninhibit(uint64_t aInhibitor);
   static void ScreenCast(uint64_t aRequest, uint32_t aSources,
                          uint32_t aCursorMode, uint32_t aPersistMode,
                          const char* aRestoreToken);
@@ -172,6 +194,8 @@ class BandeHost final {
   static bool Step(bool aBlock);
   static bool NextEvent(BandeEvent* aEvent);
 };
+
+void HandleBandeMediaAction(uint32_t aAction, double aValue);
 
 }  // namespace mozilla::widget
 

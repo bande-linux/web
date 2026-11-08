@@ -7,6 +7,7 @@
 #include "BandeKeys.h"
 #include "NativeKeyBindings.h"
 #include "nsDragService.h"
+#include "nsGTKToolkit.h"
 #include "nsLookAndFeel.h"
 #include "nsIRollupListener.h"
 #include "GtkCompositorWidget.h"
@@ -952,6 +953,20 @@ void nsWindow::DispatchFocus(bool aFocused) {
   } else {
     mWidgetListener->WindowDeactivated();
   }
+}
+
+nsGTKToolkit* nsGTKToolkit::GetToolkit() {
+  static nsGTKToolkit sToolkit;
+  return &sToolkit;
+}
+
+void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType) {
+  if (aRaise != Raise::Yes || IsPopup() || !mBandeWindow) {
+    return;
+  }
+  nsGTKToolkit* toolkit = nsGTKToolkit::GetToolkit();
+  BandeHost::Activate(mBandeWindow, toolkit->GetActivationToken().get());
+  toolkit->SetActivationToken(""_ns);
 }
 
 void nsWindow::NotifyOcclusionState(OcclusionState aState) {

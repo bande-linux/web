@@ -63,7 +63,6 @@ widget/gtk/nsDragServiceWayland.cpp
 widget/gtk/nsDragServiceWayland.h
 widget/gtk/nsFilePicker.cpp
 widget/gtk/nsFilePicker.h
-widget/gtk/nsGTKToolkit.h
 widget/gtk/nsGtkHtmlUtils.cpp
 widget/gtk/nsGtkHtmlUtils.h
 widget/gtk/nsGtkKeyUtils.cpp

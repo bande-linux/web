@@ -12,6 +12,7 @@ class nsAppShell final : public nsBaseAppShell {
   nsAppShell() = default;
 
   nsresult Init();
+  NS_IMETHOD Run() override;
 
   static void InstallTermSignalHandler();
 

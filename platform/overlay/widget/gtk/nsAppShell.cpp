@@ -13,6 +13,7 @@
 #include "BandeFdWatch.h"
 #include "BandeHost.h"
 #include "BandePortal.h"
+#include "BandeWakeLock.h"
 #include "nsClipboard.h"
 #include "nsFilePicker.h"
 #include "nsLookAndFeel.h"
@@ -64,6 +65,18 @@ nsAppShell::~nsAppShell() {
     close(mLocalPipe[0]);
     close(mLocalPipe[1]);
   }
+}
+
+NS_IMETHODIMP nsAppShell::Run() {
+  const bool wakeLocks = XRE_IsParentProcess() && BandeHost::IsActive();
+  if (wakeLocks) {
+    BandeWakeLock::Start();
+  }
+  nsresult rv = nsBaseAppShell::Run();
+  if (wakeLocks) {
+    BandeWakeLock::Stop();
+  }
+  return rv;
 }
 
 nsresult nsAppShell::Init() {
@@ -126,6 +139,10 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
                event.kind == BandeEventKind::ScreenCastClosed ||
                event.kind == BandeEventKind::Camera) {
       BandePortalHandle(event);
+    } else if (event.kind == BandeEventKind::MediaKey) {
+      HandleBandeMediaAction(event.a, event.x);
+    } else if (event.kind == BandeEventKind::Remote) {
+      BandeHost::HandleRemote(event.data, event.len);
     } else if (event.kind == BandeEventKind::Appearance) {
       nsLookAndFeel::HandleAppearanceChanged();
     } else if (event.kind == BandeEventKind::FdReady) {

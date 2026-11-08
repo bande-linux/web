@@ -6,7 +6,9 @@ use std::os::fd::{AsFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+mod mpris;
 mod portal;
+mod remote;
 mod screencast;
 
 use bande_graphics::{
@@ -45,6 +47,8 @@ pub const EVENT_FILES_CHOSEN: u32 = 26;
 pub const EVENT_SCREEN_CAST: u32 = 27;
 pub const EVENT_SCREEN_CAST_CLOSED: u32 = 28;
 pub const EVENT_CAMERA: u32 = 29;
+pub const EVENT_REMOTE: u32 = 30;
+pub const EVENT_MEDIA_KEY: u32 = 31;
 
 const DRAG_COPY: u32 = 1;
 const DRAG_MOVE: u32 = 2;
@@ -89,7 +93,7 @@ pub struct BandeEvent {
 }
 
 #[derive(Default)]
-struct Queued {
+pub(crate) struct Queued {
     kind: u32,
     window: u64,
     x: f64,
@@ -232,6 +236,8 @@ struct Host {
     focused: Option<u64>,
     appearance: Option<Appearance>,
     portals: Vec<(u64, async_channel::Sender<()>)>,
+    inhibitors: Vec<(u64, Sender<()>)>,
+    mpris: Option<mpris::Mpris>,
 }
 
 thread_local! {
@@ -727,6 +733,8 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
         focused: None,
         appearance: None,
         portals: Vec::new(),
+        inhibitors: Vec::new(),
+        mpris: None,
     }));
     display
 }
@@ -1237,7 +1245,7 @@ fn portal_channel(host: &mut Host, request: u64) -> Option<(async_channel::Recei
     Some((stopped, host.answer_sender.clone(), wake))
 }
 
-fn answer(sender: &Sender<Queued>, mut wake: &UnixStream, queued: Queued) {
+pub(crate) fn answer(sender: &Sender<Queued>, mut wake: &UnixStream, queued: Queued) {
     if sender.send(queued).is_ok() {
         let _ = wake.write_all(&[1]);
     }
@@ -1325,5 +1333,161 @@ pub extern "C" fn bande_gecko_portal_stop(request: u64) {
             }
             *known != request
         });
+    });
+}
+
+/// # Safety
+/// `name`, `path` and `interface` are NUL-terminated strings and `command` points to `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_remote_send(
+    name: *const c_char,
+    path: *const c_char,
+    interface: *const c_char,
+    command: *const u8,
+    len: usize,
+) -> bool {
+    if command.is_null() {
+        return false;
+    }
+    let command = unsafe { std::slice::from_raw_parts(command, len) };
+    remote::send(&text_of(name), &text_of(path), &text_of(interface), command)
+}
+
+/// # Safety
+/// `name`, `path` and `interface` are NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_remote_serve(
+    name: *const c_char,
+    path: *const c_char,
+    interface: *const c_char,
+) -> bool {
+    let (name, path, interface) = (text_of(name), text_of(path), text_of(interface));
+    let channel = with_host(None, |host| {
+        Some((host.answer_sender.clone(), host.answer_wake.try_clone().ok()?))
+    });
+    let Some((sender, wake)) = channel else {
+        return false;
+    };
+    remote::serve(&name, &path, &interface, remote::queue(sender, wake))
+}
+
+/// # Safety
+/// `token` is null or a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_activate(id: u64, token: *const c_char) {
+    let token = text_of(token);
+    with_host((), |host| {
+        if let Some(window) = host.window(id) {
+            let token = match token.is_empty() {
+                true => window.activation_token(""),
+                false => Ok(token),
+            };
+            if let Ok(token) = token {
+                let _ = window.activate(&token);
+            }
+        }
+    });
+}
+
+/// # Safety
+/// `reason` is null or a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_inhibit(flags: u32, reason: *const c_char) -> u64 {
+    let reason = text_of(reason);
+    with_host(0, |host| {
+        let (stop, stopped) = channel();
+        let id = host.next_id;
+        host.next_id += 1;
+        host.inhibitors.push((id, stop));
+        std::thread::spawn(move || portal::inhibit(flags, &reason, stopped));
+        id
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_uninhibit(id: u64) {
+    with_host((), |host| {
+        host.inhibitors.retain(|(known, stop)| {
+            if *known == id {
+                let _ = stop.send(());
+            }
+            *known != id
+        });
+    });
+}
+
+/// # Safety
+/// The arguments are NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_mpris_open(
+    name: *const c_char,
+    identity: *const c_char,
+    desktop_entry: *const c_char,
+) -> bool {
+    let (name, identity, desktop_entry) = (text_of(name), text_of(identity), text_of(desktop_entry));
+    with_host(false, |host| {
+        if host.mpris.is_some() {
+            return true;
+        }
+        let Ok(wake) = host.answer_wake.try_clone() else {
+            return false;
+        };
+        let deliver = mpris::deliver_to(host.answer_sender.clone(), wake);
+        host.mpris = mpris::Mpris::open(&name, &identity, &desktop_entry, deliver);
+        host.mpris.is_some()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_mpris_close() {
+    with_host((), |host| host.mpris = None);
+}
+
+fn mpris_change(change: mpris::Change) {
+    with_host((), |host| {
+        if let Some(mpris) = &host.mpris {
+            mpris.change(change);
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_mpris_status(status: u32) {
+    let status = match status {
+        2 => "Playing",
+        1 => "Paused",
+        _ => "Stopped",
+    };
+    mpris_change(mpris::Change::Status(status.to_owned()));
+}
+
+/// # Safety
+/// The arguments are null or NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_mpris_track(
+    title: *const c_char,
+    artist: *const c_char,
+    album: *const c_char,
+    art: *const c_char,
+) {
+    mpris_change(mpris::Change::Track(mpris::Track {
+        title: text_of(title),
+        artist: text_of(artist),
+        album: text_of(album),
+        art: text_of(art),
+    }));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_mpris_keys(keys: u32) {
+    mpris_change(mpris::Change::Keys(keys));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_mpris_position(duration: f64, position: f64, rate: f64) {
+    mpris_change(mpris::Change::Position {
+        duration,
+        position,
+        rate,
     });
 }
