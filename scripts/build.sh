@@ -14,7 +14,7 @@ fetch)
         > /etc/apt/sources.list.d/debian-src.sources
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends devscripts quilt python3 debhelper dpkg-dev \
-        fakeroot ca-certificates librsvg2-bin > /dev/null
+        fakeroot ca-certificates librsvg2-bin iso-codes > /dev/null
     mkdir -p "$work"
     cd "$work"
     apt-get source -qq "firefox-esr=$debver" > /dev/null
@@ -30,10 +30,13 @@ compile)
     start_note="jobs $jobs, Rust ${BROWSER_RUST_LTO:--Clto=thin}"
     echo "build: $start_note"
     start=$SECONDS
-    DEB_BUILD_OPTIONS="parallel=$jobs nocheck" DEBIAN_RUST_LTO=${BROWSER_RUST_LTO:--Clto=thin} dpkg-buildpackage -B -uc -us -nc
+    DEB_BUILD_OPTIONS="parallel=$jobs nocheck" DEBIAN_RUST_LTO=${BROWSER_RUST_LTO:--Clto=thin} dpkg-buildpackage -b -uc -us -nc
     echo "build: $(( (SECONDS - start) / 60 )) min"
     mkdir -p "$out"
     cp "$work"/bande-browser_"$version"_*.deb "$out/"
+    for lang in $(tr '[:upper:]' '[:lower:]' < debian/bande-languages); do
+        cp "$work/bande-browser-l10n-${lang}_${version}_all.deb" "$out/"
+    done
     ls -l "$out"
     ;;
 *)

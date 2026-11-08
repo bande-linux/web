@@ -71,11 +71,13 @@ s = s.replace('debian/@browser@.desktop usr/share/applications\n', 'debian/org.b
 s = s.replace('debian/@browser@-symbolic.svg usr/share/icons/hicolor/symbolic/apps\n', '')
 s = s.replace('usr/lib/@browser@/pingsender\n', '')
 s = s.replace('debian/vendor.js usr/share/@browser@/browser/defaults/preferences\n', 'debian/00-bande.js usr/share/@browser@/browser/defaults/preferences\n')
+s = s.replace('%if browser != firefox\ndebian/firefox usr/bin\n%endif\n', '')
 open(install, 'w').write(s)
 PY
 sed -i "s/^%define RAW_DESCRIPTION .*/%define RAW_DESCRIPTION Bande's web browser, based on Mozilla Firefox source code/" debian/control.in
 sed -i 's/^Depends: ${shlibs:Depends},/Depends: bande-compositor (>= 0.1.8), ${shlibs:Depends},/' debian/control.in
-rm -f debian/google.key debian/mls.key debian/browser.desktop.in debian/browser-symbolic.svg.in
+rm -f debian/google.key debian/mls.key debian/browser.desktop.in debian/browser-symbolic.svg.in \
+    debian/browser.preinst.in debian/browser.postrm.in debian/firefox.in
 sed -i 's/^stamps\/dh_install:: debian\/noinstall debian\/$($(PRODUCT))-symbolic.svg/stamps\/dh_install:: debian\/noinstall/' debian/rules
 cp "$repo/prefs/bande.js" debian/00-bande.js
 for window in PictureInPicture:Picture-in-Picture Sharing:Sharing\ Indicator; do
@@ -110,7 +112,20 @@ cp -a "$repo/platform/overlay/." .
 find browser/locales/en-US toolkit/locales/en-US dom/locales/en-US -type f \( -name '*.ftl' -o -name '*.properties' -o -name '*.dtd' \) \
     -exec sed -i -E '/^\s*(#|<!--)/! s/\bFirefox\b/Browser/g' {} +
 cat "$repo/theme/bande.css" >> browser/themes/linux/browser.css
+cp "$repo/l10n/languages" debian/bande-languages
+sed -i 's/^L10N_LANGS = .*/L10N_LANGS = $(shell cat debian\/bande-languages)/' debian/upstream.mk
+sed -i 's/^         @browser@ (>= ${source:Version}), @browser@ (<< ${source:Version}.1~)$/         @browser@ (= ${source:Version})\nEnhances: @browser@/' debian/l10n/browser-l10n.control.in
+grep -q '^Enhances: @browser@$' debian/l10n/browser-l10n.control.in
+for lang in $(cat "$repo/l10n/languages"); do
+    find "l10n-$lang" -type f \( -name '*.ftl' -o -name '*.properties' -o -name '*.dtd' \) \
+        -exec sed -i -E '/^\s*(#|<!--)/! s/\bFirefox\b/Browser/g' {} +
+done
 python3 "$repo/scripts/fetch-tracking-lists.py" .
+python3 "$repo/scripts/gut.py" . browser/components/asrouter browser/components/ipprotection \
+    toolkit/components/ipprotection browser/components/genai browser/components/aiwindow \
+    browser/components/reportbrokensite toolkit/components/reportbrokensite browser/components/messagepreview
+cp "$repo"/theme/pages/* browser/base/content/
+cat "$repo/theme/preferences.css" >> browser/themes/shared/preferences/preferences.css
 
 find browser toolkit -type f \( -iname '*fox*.svg' -o -name 'kit-*.svg' -o -name 'kit.svg' \) -not -path '*/test*' \
     -exec sh -c 'echo "$0" > "$1"' "$blank" {} \;
@@ -119,3 +134,4 @@ cp "$svg" browser/themes/shared/icons/window-firefox.svg
 
 debian/rules debian/control
 grep -q '^Source: bande-browser$' debian/control
+! grep -q 'debian/firefox usr/bin' debian/browser.install.in
