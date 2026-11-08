@@ -303,14 +303,15 @@ void nsWindow::Show(bool aState) {
     } else {
       MapToplevel();
     }
-    Paint();
+    Paint(true);
   } else {
     UnmapToplevel();
   }
 }
 
-void nsWindow::Paint() {
-  if (mIsDestroyed) {
+void nsWindow::Paint(bool aExposed) {
+  mPaintPending = false;
+  if (mIsDestroyed || !mVisible) {
     return;
   }
   nsIWidgetListener* listener = GetPaintListener();
@@ -327,17 +328,22 @@ void nsWindow::Paint() {
             LookAndFeel::UseStandins::No));
         mConfiguredClearColor = true;
       }
-      layerManager->SetNeedsComposite(true);
-      layerManager->ScheduleComposite(wr::RenderReasons::WIDGET);
-      layerManager->SetNeedsComposite(false);
+      if (aExposed || layerManager->NeedsComposite()) {
+        layerManager->ScheduleComposite(wr::RenderReasons::WIDGET);
+        layerManager->SetNeedsComposite(false);
+      }
     }
   }
   listener->PaintWindow(this);
 }
 
 void nsWindow::Invalidate(const LayoutDeviceIntRect&) {
+  if (mPaintPending) {
+    return;
+  }
+  mPaintPending = true;
   NS_DispatchToCurrentThread(NS_NewRunnableFunction(
-      "nsWindow::Invalidate", [self = RefPtr{this}]() { self->Paint(); }));
+      "nsWindow::Invalidate", [self = RefPtr{this}]() { self->Paint(false); }));
 }
 
 void nsWindow::Move(const DesktopPoint& aPoint) {
@@ -868,7 +874,9 @@ void nsWindow::DispatchComposition(const BandeEvent& aEvent) {
   nsEventStatus status = nsEventStatus_eIgnore;
   if (aEvent.kind == BandeEventKind::ImeCommit) {
     mComposing = false;
-    dispatcher->CommitComposition(status, &text);
+    nsresult rv = dispatcher->CommitComposition(status, &text);
+    MOZ_LOG(sImeLog, LogLevel::Debug,
+            ("commit rv %x status %d", uint32_t(rv), int(status)));
     return;
   }
   if (text.IsEmpty()) {

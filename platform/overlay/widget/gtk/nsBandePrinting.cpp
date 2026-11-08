@@ -151,6 +151,7 @@ nsPrintDialogServiceBande::ShowPrintDialog(mozIDOMWindowProxy* aParent,
                                            dom::Promise** aPromise) {
   MOZ_LOG(sPrintLog, LogLevel::Debug, ("print dialog asked"));
   aSettings->SetOutputDestination(nsIPrintSettings::kOutputDestinationPrinter);
+  aSettings->SetPrinterName(u"Bande"_ns);
   aSettings->SetPrintSilent(true);
   return ResolvedPromise(aCx, NS_OK, aPromise);
 }

@@ -176,7 +176,7 @@ class nsWindow final : public nsIWidget {
   bool MapSurfaceLocked(mozilla::widget::WaylandSurfaceLock& aLock);
   void UnmapToplevel();
   void RefreshBounds(uint32_t aWidth, uint32_t aHeight);
-  void Paint();
+  void Paint(bool aExposed);
   void RefreshScale();
   void OnBandeEvent(const mozilla::widget::BandeEvent& aEvent);
   void DispatchPointer(const mozilla::widget::BandeEvent& aEvent);
@@ -193,6 +193,7 @@ class nsWindow final : public nsIWidget {
   bool mActivated = false;
   bool mIMEFocused = false;
   bool mComposing = false;
+  bool mPaintPending = false;
   MozContainer mContainer;
   LayoutDeviceIntRect mBounds;
   LayoutDeviceIntRegion mOpaqueRegion;
