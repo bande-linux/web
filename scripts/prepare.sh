@@ -120,11 +120,16 @@ for lang in $(cat "$repo/l10n/languages"); do
     find "l10n-$lang" -type f \( -name '*.ftl' -o -name '*.properties' -o -name '*.dtd' \) \
         -exec sed -i -E '/^\s*(#|<!--)/! s/\bFirefox\b/Browser/g' {} +
 done
+printf '\nmain-context-menu-bande-look-up =\n    .label = Slå upp ”{ $word }”\n' >> l10n-sv-SE/browser/browser/browserContext.ftl
 python3 "$repo/scripts/fetch-tracking-lists.py" .
 python3 "$repo/scripts/gut.py" . browser/components/asrouter browser/components/ipprotection \
     toolkit/components/ipprotection browser/components/genai browser/components/aiwindow \
     browser/components/reportbrokensite toolkit/components/reportbrokensite browser/components/messagepreview
 cp "$repo"/theme/pages/* browser/base/content/
+cp "$repo/l10n/en-US/bande.ftl" browser/locales/en-US/browser/
+for lang in $(cat "$repo/l10n/languages"); do
+    [ ! -f "$repo/l10n/$lang/bande.ftl" ] || cp "$repo/l10n/$lang/bande.ftl" "l10n-$lang/browser/browser/"
+done
 cat "$repo/theme/preferences.css" >> browser/themes/shared/preferences/preferences.css
 
 find browser toolkit -type f \( -iname '*fox*.svg' -o -name 'kit-*.svg' -o -name 'kit.svg' \) -not -path '*/test*' \
