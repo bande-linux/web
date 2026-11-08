@@ -745,6 +745,7 @@ void nsWindow::DispatchDrag(const BandeEvent& aEvent) {
     session->GetCanDrop(&canDrop);
     uint32_t action = nsIDragService::DRAGDROP_ACTION_NONE;
     session->GetDragAction(&action);
+    MOZ_LOG(sDragLog, LogLevel::Debug, ("reply canDrop %d action %u", canDrop, action));
     BandeHost::AcceptDrag(mBandeWindow,
                           !canDrop ? 0
                           : (action & nsIDragService::DRAGDROP_ACTION_MOVE) ? 2
