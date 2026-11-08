@@ -10,6 +10,8 @@
 class nsLookAndFeel final : public mozilla::widget::HeadlessLookAndFeel {
  public:
   nsLookAndFeel() = default;
+
+  nsresult NativeGetInt(IntID aID, int32_t& aResult) override;
 };
 
 #endif
