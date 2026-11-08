@@ -192,6 +192,7 @@ class nsWindow final : public nsIWidget {
   bool mGrabs = false;
   bool mActivated = false;
   bool mIMEFocused = false;
+  bool mComposing = false;
   MozContainer mContainer;
   LayoutDeviceIntRect mBounds;
   LayoutDeviceIntRegion mOpaqueRegion;

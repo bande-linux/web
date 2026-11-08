@@ -768,6 +768,7 @@ void nsWindow::DispatchDrag(const BandeEvent& aEvent) {
     }
     case BandeEventKind::DragMove:
       if (session) {
+        session->SetDragAction(nsIDragService::DRAGDROP_ACTION_COPY);
         session->SetDragEndPoint(point.x, point.y);
         session->FireDragEventAtSource(eDrag, 0);
         dispatch(eDragOver);
@@ -793,6 +794,9 @@ void nsWindow::DispatchDrag(const BandeEvent& aEvent) {
                                            : nsDependentCString(""),
                                uris, aEvent.text != nullptr);
         }
+        session->SetDragAction(aEvent.a == 2
+                                   ? nsIDragService::DRAGDROP_ACTION_MOVE
+                                   : nsIDragService::DRAGDROP_ACTION_COPY);
         session->SetDragEndPoint(point.x, point.y);
         dispatch(eDragOver);
         dispatch(eDrop);
@@ -856,15 +860,18 @@ void nsWindow::DispatchComposition(const BandeEvent& aEvent) {
   NS_ConvertUTF8toUTF16 text(utf8);
   nsEventStatus status = nsEventStatus_eIgnore;
   if (aEvent.kind == BandeEventKind::ImeCommit) {
+    mComposing = false;
     dispatcher->CommitComposition(status, &text);
     return;
   }
   if (text.IsEmpty()) {
-    if (dispatcher->IsComposing()) {
+    if (mComposing) {
+      mComposing = false;
       dispatcher->CommitComposition(status, &EmptyString());
     }
     return;
   }
+  mComposing = true;
   if (NS_FAILED(dispatcher->SetPendingCompositionString(text)) ||
       NS_FAILED(dispatcher->AppendClauseToPendingComposition(
           text.Length(), TextRangeType::eRawClause))) {
