@@ -106,9 +106,9 @@ nsFilePicker::Open(nsIFilePickerShownCallback* aCallback) {
 
 void nsFilePicker::HandleAnswer(uint32_t aRequest, bool aChosen,
                                 const nsACString& aUris) {
-  RefPtr<nsFilePicker> picker;
-  if (Pending().Remove(aRequest, getter_AddRefs(picker)) && picker) {
-    picker->Answered(aChosen, aUris);
+  if (auto picker = Pending().Extract(aRequest)) {
+    RefPtr<nsFilePicker> answered = std::move(*picker);
+    answered->Answered(aChosen, aUris);
   }
 }
 
