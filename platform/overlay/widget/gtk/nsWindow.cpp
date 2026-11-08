@@ -31,6 +31,7 @@
 #include "mozilla/layers/WebRenderBridgeChild.h"
 #include "mozilla/layers/WebRenderLayerManager.h"
 #include "mozilla/widget/WaylandSurface.h"
+#include "mozilla/widget/WindowOcclusionState.h"
 #include "nsAppRunner.h"
 #include "nsTHashMap.h"
 #include "nsXULAppAPI.h"
