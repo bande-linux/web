@@ -445,6 +445,10 @@ void* nsWindow::GetNativeData(uint32_t aDataType) {
     case NS_NATIVE_WINDOW:
     case NS_NATIVE_WIDGET:
       return this;
+    case NS_RAW_NATIVE_IME_CONTEXT: {
+      nsIWidget* top = GetTopLevelWidget();
+      return top ? top : this;
+    }
     case NS_NATIVE_EGL_WINDOW: {
       double scale = FractionalScaleFactor();
       return mContainer.mSurface
