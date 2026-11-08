@@ -106,15 +106,6 @@ Build the Bande widget layer instead of GTK: no GTK, GLib or D-Bus in configure,
      allow_missing=toolkit_gtk_wayland_optional,
      when=toolkit_gtk_wayland,
  )
-@@ -2805,7 +2805,7 @@
- 
- @depends(toolkit)
- def has_remote(toolkit):
--    if toolkit in ("gtk", "windows", "cocoa"):
-+    if toolkit in ("windows", "cocoa"):
-         return True
- 
- 
 @@ -3512,20 +3512,10 @@
  # Gtk+
  # ==============================================================

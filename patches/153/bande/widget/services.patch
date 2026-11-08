@@ -233,3 +233,46 @@ Drop GLib from downloads, keyring, sandbox, serial and DOM utilities
      }
  #  endif
  
+--- firefox-esr-153.6.0esr.orig/toolkit/components/remote/moz.build
++++ firefox-esr-153.6.0esr/toolkit/components/remote/moz.build
+@@ -38,9 +38,7 @@
+         CXXFLAGS += CONFIG["MOZ_DBUS_CFLAGS"]
+     else:
+         SOURCES += [
+-            "nsGTKRemoteServer.cpp",
+-            "nsXRemoteClient.cpp",
+-            "nsXRemoteServer.cpp",
++            "nsBandeRemote.cpp",
+         ]
+     CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
+ 
+--- firefox-esr-153.6.0esr.orig/toolkit/components/remote/nsRemoteService.cpp
++++ firefox-esr-153.6.0esr/toolkit/components/remote/nsRemoteService.cpp
+@@ -8,8 +8,7 @@
+ #    include "nsDBusRemoteServer.h"
+ #    include "nsDBusRemoteClient.h"
+ #  else
+-#    include "nsGTKRemoteServer.h"
+-#    include "nsXRemoteClient.h"
++#    include "nsBandeRemote.h"
+ #  endif
+ #elif defined(XP_WIN)
+ #  include "nsWinRemoteServer.h"
+@@ -196,7 +195,7 @@
+ #  if defined(MOZ_ENABLE_DBUS)
+   client = MakeUnique<nsDBusRemoteClient>(mStartupToken);
+ #  else
+-  client = MakeUnique<nsXRemoteClient>(mStartupToken);
++  client = MakeUnique<nsBandeRemoteClient>(mStartupToken);
+ #  endif
+ #elif defined(XP_WIN)
+   client = MakeUnique<nsWinRemoteClient>();
+@@ -258,7 +257,7 @@
+ #  if defined(MOZ_ENABLE_DBUS)
+   mRemoteServer = MakeUnique<nsDBusRemoteServer>();
+ #  else
+-  mRemoteServer = MakeUnique<nsGTKRemoteServer>();
++  mRemoteServer = MakeUnique<nsBandeRemoteServer>();
+ #  endif
+ #elif defined(XP_WIN)
+   mRemoteServer = MakeUnique<nsWinRemoteServer>();
