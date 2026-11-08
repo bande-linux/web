@@ -7,7 +7,10 @@
 #include "BandeHost.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/gfx/PrintTargetPDF.h"
+#include <sys/stat.h>
+
 #include "nsAppDirectoryServiceDefs.h"
+#include "nsDirectoryServiceDefs.h"
 #include "nsComponentManagerUtils.h"
 #include "nsDirectoryServiceUtils.h"
 #include "nsIFileStreams.h"

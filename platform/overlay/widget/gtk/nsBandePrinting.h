@@ -27,7 +27,7 @@ class nsDeviceContextSpecBande final : public nsIDeviceContextSpec {
   NS_IMETHOD EndPage() override { return NS_OK; }
 
  private:
-  ~nsDeviceContextSpecBande() override = default;
+  ~nsDeviceContextSpecBande() = default;
 
   nsCOMPtr<nsIFile> mSpoolFile;
   nsCString mTitle;
