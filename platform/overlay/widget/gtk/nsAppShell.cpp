@@ -12,6 +12,7 @@
 
 #include "BandeFdWatch.h"
 #include "BandeHost.h"
+#include "BandePortal.h"
 #include "nsClipboard.h"
 #include "nsFilePicker.h"
 #include "nsLookAndFeel.h"
@@ -125,6 +126,10 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
                                 event.len));
     } else if (event.kind == BandeEventKind::ClipboardChanged) {
       nsClipboard::HandleChanged();
+    } else if (event.kind == BandeEventKind::ScreenCast ||
+               event.kind == BandeEventKind::ScreenCastClosed ||
+               event.kind == BandeEventKind::Camera) {
+      BandePortalHandle(event);
     } else if (event.kind == BandeEventKind::Appearance) {
       nsLookAndFeel::HandleAppearanceChanged();
     } else if (event.kind == BandeEventKind::FdReady) {

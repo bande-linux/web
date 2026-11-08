@@ -11,8 +11,10 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
+async-channel = "=2.5.0"
 bande-graphics = { git = "https://github.com/bande-linux/desktop", branch = "gap-firefox-bande-widget" }
 bande-toolkit-platform = { git = "https://github.com/bande-linux/desktop", branch = "gap-firefox-bande-widget" }
+futures-lite = "=2.6.1"
 rustix = { version = "=1.1.6", features = ["event", "pipe"] }
 wayland-client = "=0.31.15"
 zbus = "=5.19.0"

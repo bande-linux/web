@@ -43,6 +43,9 @@ static LazyLogModule sBandeLog("Bande");
   X(choose_files, void, uint64_t, uint32_t, uint32_t, const char*, const char*, uint32_t, const char*, const char*) \
   X(print_pdf, void, const char*, const char*)                         \
   X(appearance, bool, BandeAppearance*)                                \
+  X(screencast, void, uint64_t, uint32_t, uint32_t, uint32_t, const char*) \
+  X(camera, void, uint64_t)                                            \
+  X(portal_stop, void, uint64_t)                                       \
   X(set_blur, void, uint64_t, double, double, double, double)          \
   X(accept_drag, void, uint64_t, uint32_t)                             \
   X(paste, bool, const char*)                                          \
@@ -179,6 +182,13 @@ void BandeHost::ChooseFiles(uint64_t aWindow, uint32_t aRequest,
 void BandeHost::PrintPdf(const char* aTitle, const char* aPath) {
   s_print_pdf(aTitle, aPath);
 }
+void BandeHost::ScreenCast(uint64_t aRequest, uint32_t aSources,
+                           uint32_t aCursorMode, uint32_t aPersistMode,
+                           const char* aRestoreToken) {
+  s_screencast(aRequest, aSources, aCursorMode, aPersistMode, aRestoreToken);
+}
+void BandeHost::Camera(uint64_t aRequest) { s_camera(aRequest); }
+void BandeHost::PortalStop(uint64_t aRequest) { s_portal_stop(aRequest); }
 bool BandeHost::GetAppearance(BandeAppearance* aOut) {
   return s_appearance(aOut);
 }

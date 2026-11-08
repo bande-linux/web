@@ -342,8 +342,10 @@ source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-wi
 name = "bande-gecko"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "bande-graphics",
  "bande-toolkit-platform",
+ "futures-lite",
  "rustix",
  "wayland-client",
  "zbus",

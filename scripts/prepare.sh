@@ -52,8 +52,6 @@ ac_add_options --disable-default-browser-agent
 ac_add_options --enable-proxy-bypass-protection
 ac_add_options --disable-dbus
 ac_add_options --disable-necko-wifi
-ac_add_options --disable-webrtc
-ac_add_options --disable-accessibility
 export MOZ_TELEMETRY_REPORTING=
 mk_add_options MOZ_CRASHREPORTER=0
 mk_add_options MOZ_DATA_REPORTING=0

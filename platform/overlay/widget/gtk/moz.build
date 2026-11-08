@@ -48,6 +48,7 @@ UNIFIED_SOURCES += [
     "BandeFdWatch.cpp",
     "BandeHost.cpp",
     "BandeKeys.cpp",
+    "BandePortal.cpp",
     "BandeTimers.cpp",
     "CompositorWidgetChild.cpp",
     "CompositorWidgetParent.cpp",

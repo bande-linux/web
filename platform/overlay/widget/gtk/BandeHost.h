@@ -40,6 +40,9 @@ enum class BandeEventKind : uint32_t {
   ImePreedit = 24,
   ImeCommit = 25,
   FilesChosen = 26,
+  ScreenCast = 27,
+  ScreenCastClosed = 28,
+  Camera = 29,
 };
 
 enum BandeModifier : uint32_t {
@@ -151,6 +154,11 @@ class BandeHost final {
   static void AcceptDrag(uint64_t aWindow, uint32_t aAction);
   static void PrintPdf(const char* aTitle, const char* aPath);
   static bool GetAppearance(BandeAppearance* aOut);
+  static void ScreenCast(uint64_t aRequest, uint32_t aSources,
+                         uint32_t aCursorMode, uint32_t aPersistMode,
+                         const char* aRestoreToken);
+  static void Camera(uint64_t aRequest);
+  static void PortalStop(uint64_t aRequest);
   static void SetBlur(uint64_t aWindow, double aX, double aY, double aWidth,
                       double aHeight);
   static void ChooseFiles(uint64_t aWindow, uint32_t aRequest, uint32_t aMode,

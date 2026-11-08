@@ -2,11 +2,12 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::io::{Read, Write};
-use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 mod portal;
+mod screencast;
 
 use bande_graphics::{
     Appearance, Color, Contrast, Cursor, Event, Modifiers, Palette, PointerButton, Rect, ResizeEdge,
@@ -41,6 +42,9 @@ pub const EVENT_DRAG_FINISHED: u32 = 23;
 pub const EVENT_IME_PREEDIT: u32 = 24;
 pub const EVENT_IME_COMMIT: u32 = 25;
 pub const EVENT_FILES_CHOSEN: u32 = 26;
+pub const EVENT_SCREEN_CAST: u32 = 27;
+pub const EVENT_SCREEN_CAST_CLOSED: u32 = 28;
+pub const EVENT_CAMERA: u32 = 29;
 
 const DRAG_COPY: u32 = 1;
 const DRAG_MOVE: u32 = 2;
@@ -227,6 +231,7 @@ struct Host {
     current_data: Vec<u8>,
     focused: Option<u64>,
     appearance: Option<Appearance>,
+    portals: Vec<(u64, async_channel::Sender<()>)>,
 }
 
 thread_local! {
@@ -721,6 +726,7 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
         current_data: Vec::new(),
         focused: None,
         appearance: None,
+        portals: Vec::new(),
     }));
     display
 }
@@ -1217,5 +1223,107 @@ pub unsafe extern "C" fn bande_gecko_print_pdf(title: *const c_char, path: *cons
         let window = host.focused.or_else(|| host.ids.first().copied()).unwrap_or(0);
         let parent = host.exported(window);
         std::thread::spawn(move || portal::print(&parent, &title, &path));
+    });
+}
+
+fn raw_fd(fd: Option<OwnedFd>) -> u32 {
+    fd.map_or(u32::MAX, |fd| fd.into_raw_fd() as u32)
+}
+
+fn portal_channel(host: &mut Host, request: u64) -> Option<(async_channel::Receiver<()>, Sender<Queued>, UnixStream)> {
+    let (stop, stopped) = async_channel::bounded(1);
+    let wake = host.answer_wake.try_clone().ok()?;
+    host.portals.push((request, stop));
+    Some((stopped, host.answer_sender.clone(), wake))
+}
+
+fn answer(sender: &Sender<Queued>, mut wake: &UnixStream, queued: Queued) {
+    if sender.send(queued).is_ok() {
+        let _ = wake.write_all(&[1]);
+    }
+}
+
+/// # Safety
+/// `restore_token` is null or a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_screencast(
+    request: u64,
+    sources: u32,
+    cursor: u32,
+    persist: u32,
+    restore_token: *const c_char,
+) {
+    let capture = screencast::Capture {
+        sources,
+        cursor,
+        persist,
+        restore_token: text_of(restore_token),
+    };
+    let channel = with_host(None, |host| portal_channel(host, request));
+    let Some((stopped, sender, wake)) = channel else {
+        return;
+    };
+    std::thread::spawn(move || {
+        screencast::screen_cast(capture, stopped, |report| {
+            let queued = match report {
+                screencast::Report::Answer {
+                    response,
+                    node,
+                    fd,
+                    restore_token,
+                } => Queued {
+                    kind: EVENT_SCREEN_CAST,
+                    window: request,
+                    b: response,
+                    c: node,
+                    d: raw_fd(fd),
+                    text: CString::new(restore_token).ok(),
+                    ..Queued::default()
+                },
+                screencast::Report::Closed => Queued {
+                    kind: EVENT_SCREEN_CAST_CLOSED,
+                    window: request,
+                    ..Queued::default()
+                },
+            };
+            answer(&sender, &wake, queued);
+        });
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_camera(request: u64) {
+    let channel = with_host(None, |host| portal_channel(host, request));
+    let Some((stopped, sender, wake)) = channel else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let (response, fd) = match screencast::camera(stopped) {
+            Ok(fd) => (screencast::SUCCESS, Some(fd)),
+            Err(response) => (response, None),
+        };
+        answer(
+            &sender,
+            &wake,
+            Queued {
+                kind: EVENT_CAMERA,
+                window: request,
+                b: response,
+                d: raw_fd(fd),
+                ..Queued::default()
+            },
+        );
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_portal_stop(request: u64) {
+    with_host((), |host| {
+        host.portals.retain(|(known, stop)| {
+            if *known == request {
+                let _ = stop.try_send(());
+            }
+            *known != request
+        });
     });
 }

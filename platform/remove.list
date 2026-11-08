@@ -92,3 +92,6 @@ widget/gtk/nsWindowX11.h
 widget/gtk/compat
 widget/gtk/mozgtk
 widget/gtk/mozwayland
+third_party/libwebrtc/modules/portal/scoped_glib.cc
+third_party/libwebrtc/modules/portal/scoped_glib.h
+third_party/libwebrtc/modules/desktop_capture/linux/wayland/scoped_glib.h
