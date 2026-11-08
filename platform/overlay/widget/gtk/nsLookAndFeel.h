@@ -5,6 +5,7 @@
 #ifndef nsLookAndFeel_h__
 #define nsLookAndFeel_h__
 
+#include "BandeHost.h"
 #include "HeadlessLookAndFeel.h"
 
 class nsLookAndFeel final : public mozilla::widget::HeadlessLookAndFeel {
@@ -12,6 +13,11 @@ class nsLookAndFeel final : public mozilla::widget::HeadlessLookAndFeel {
   nsLookAndFeel() = default;
 
   nsresult NativeGetInt(IntID aID, int32_t& aResult) override;
+  nsresult NativeGetColor(ColorID aID, ColorScheme aScheme,
+                          nscolor& aResult) override;
+
+  static const mozilla::widget::BandeAppearance* Appearance();
+  static void HandleAppearanceChanged();
 };
 
 #endif

@@ -7,6 +7,7 @@
 #include "BandeKeys.h"
 #include "NativeKeyBindings.h"
 #include "nsDragService.h"
+#include "nsLookAndFeel.h"
 #include "nsIRollupListener.h"
 #include "GtkCompositorWidget.h"
 #include "ScreenHelperBande.h"
@@ -527,6 +528,58 @@ void nsWindow::UpdateOpaqueRegion(const LayoutDeviceIntRegion& aRegion) {
   mOpaqueRegion = aRegion;
   if (mContainer.mSurface) {
     mContainer.mSurface->SetOpaqueRegion(mOpaqueRegion.ToUnknownRegion());
+  }
+  UpdateBlur();
+}
+
+void nsWindow::UpdateBlur() {
+  if (IsPopup() || !mBandeWindow || mIsDestroyed) {
+    return;
+  }
+  const BandeAppearance* appearance = nsLookAndFeel::Appearance();
+  LayoutDeviceIntRegion clear(LayoutDeviceIntRect(LayoutDeviceIntPoint(),
+                                                  mBounds.Size()));
+  clear.SubOut(mOpaqueRegion);
+  const LayoutDeviceIntRect area = clear.GetBounds();
+  if (!appearance || !appearance->translucent || area.IsEmpty()) {
+    BandeHost::SetBlur(mBandeWindow, 0, 0, 0, 0);
+    return;
+  }
+  const double scale = FractionalScaleFactor();
+  BandeHost::SetBlur(mBandeWindow, area.x / scale, area.y / scale,
+                     area.width / scale, area.height / scale);
+}
+
+void nsWindow::AppearanceChanged() {
+  for (nsWindow* window : LiveWindows().Values()) {
+    window->UpdateBlur();
+  }
+}
+
+void nsWindow::SetTransparencyMode(TransparencyMode aMode) {
+  if (IsPopup()) {
+    mTransparentPopup = aMode == TransparencyMode::Transparent;
+  }
+}
+
+TransparencyMode nsWindow::GetTransparencyMode() {
+  return !IsPopup() || mTransparentPopup ? TransparencyMode::Transparent
+                                         : TransparencyMode::Opaque;
+}
+
+void nsWindow::DidGetNonBlankPaint() {
+  if (mGotNonBlankPaint) {
+    return;
+  }
+  mGotNonBlankPaint = true;
+  if (!mConfiguredClearColor) {
+    mConfiguredClearColor = true;
+    return;
+  }
+  if (WindowRenderer* renderer = GetWindowRenderer()) {
+    if (WebRenderLayerManager* layerManager = renderer->AsWebRender()) {
+      layerManager->WrBridge()->SendSetDefaultClearColor(NS_TRANSPARENT);
+    }
   }
 }
 

@@ -4,6 +4,8 @@
 
 #include "ScreenHelperBande.h"
 
+#include <cmath>
+
 #include "mozilla/widget/ScreenManager.h"
 #include "mozilla/widget/nsWaylandDisplay.h"
 #include "nsXULAppAPI.h"
@@ -43,10 +45,21 @@ void ScreenHelperBande::Refresh() {
       if (monitor->pendingChanges || !monitor->pixelWidth) {
         continue;
       }
-      const double scale = sScale > 0.0 ? sScale : double(monitor->scale);
-      const LayoutDeviceIntRect rect(
-          int32_t(monitor->x * scale), int32_t(monitor->y * scale),
-          monitor->pixelWidth, monitor->pixelHeight);
+      const bool logical = monitor->logicalWidth > 0 && monitor->logicalHeight > 0;
+      const double scale =
+          logical ? std::sqrt(double(monitor->pixelWidth) * monitor->pixelHeight /
+                              (double(monitor->logicalWidth) * monitor->logicalHeight))
+          : sScale > 0.0 ? sScale
+                         : double(monitor->scale);
+      const LayoutDeviceIntRect rect =
+          logical ? LayoutDeviceIntRect(
+                        int32_t(std::round(monitor->logicalX * scale)),
+                        int32_t(std::round(monitor->logicalY * scale)),
+                        int32_t(std::round(monitor->logicalWidth * scale)),
+                        int32_t(std::round(monitor->logicalHeight * scale)))
+                  : LayoutDeviceIntRect(int32_t(monitor->x * scale),
+                                        int32_t(monitor->y * scale),
+                                        monitor->pixelWidth, monitor->pixelHeight);
       const float refresh = monitor->refresh ? monitor->refresh / 1000.0f : 60.0f;
       screens.AppendElement(MakeRefPtr<Screen>(
           rect, rect, 24, 24, uint32_t(refresh), DesktopToLayoutDeviceScale(scale),

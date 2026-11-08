@@ -89,6 +89,7 @@ class nsWindow final : public nsIWidget {
   NS_INLINE_DECL_REFCOUNTING_INHERITED(nsWindow, nsIWidget)
 
   static void HandleBandeEvent(const mozilla::widget::BandeEvent& aEvent);
+  static void AppearanceChanged();
   static nsWindow* FromWidget(nsIWidget* aWidget) {
     if (aWidget && aWidget->IsNativeWidget()) {
       return static_cast<nsWindow*>(aWidget);
@@ -158,6 +159,9 @@ class nsWindow final : public nsIWidget {
   mozilla::UniquePtr<mozilla::widget::WaylandSurfaceLock> LockSurface();
   LayoutDeviceIntRegion GetOpaqueRegion() const { return mOpaqueRegion; }
   void UpdateOpaqueRegion(const LayoutDeviceIntRegion& aRegion) override;
+  void SetTransparencyMode(TransparencyMode aMode) override;
+  TransparencyMode GetTransparencyMode() override;
+  void DidGetNonBlankPaint() override;
   bool IsPopup() const { return mWindowType == WindowType::Popup; }
   bool IsDragPopup() const { return false; }
   bool IsDestroyed() const { return mIsDestroyed; }
@@ -178,6 +182,7 @@ class nsWindow final : public nsIWidget {
   void RefreshBounds(uint32_t aWidth, uint32_t aHeight);
   void Paint(bool aExposed);
   void RefreshScale();
+  void UpdateBlur();
   void OnBandeEvent(const mozilla::widget::BandeEvent& aEvent);
   void DispatchPointer(const mozilla::widget::BandeEvent& aEvent);
   void DispatchScroll(const mozilla::widget::BandeEvent& aEvent);
@@ -210,6 +215,8 @@ class nsWindow final : public nsIWidget {
   bool mEnabled = true;
   bool mIsDestroyed = false;
   bool mConfiguredClearColor = false;
+  bool mGotNonBlankPaint = false;
+  bool mTransparentPopup = false;
 };
 
 #endif

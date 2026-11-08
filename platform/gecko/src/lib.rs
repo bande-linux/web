@@ -8,7 +8,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 mod portal;
 
-use bande_graphics::{Color, Cursor, Rect, Event, Modifiers, PointerButton, ResizeEdge, Scene, ScrollSource};
+use bande_graphics::{
+    Appearance, Color, Contrast, Cursor, Event, Modifiers, Palette, PointerButton, Rect, ResizeEdge,
+    Scene, Scheme, ScrollSource,
+};
 use bande_toolkit_platform::{DragAction, DragEvent, Role, Surfaces, Transfer, Wait, Window, WindowEvent, step_surfaces};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use wayland_client::{Connection, EventQueue};
@@ -98,6 +101,111 @@ struct Queued {
     data: Vec<u8>,
 }
 
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct BandePalette {
+    pub chassis: u32,
+    pub frame: u32,
+    pub sheet: u32,
+    pub overlay: u32,
+    pub panel: u32,
+    pub well: u32,
+    pub field: u32,
+    pub raised: u32,
+    pub hairline: u32,
+    pub edge: u32,
+    pub ink: u32,
+    pub ink2: u32,
+    pub ink3: u32,
+    pub accent: u32,
+    pub accent_text: u32,
+    pub on_accent: u32,
+    pub accent_soft: u32,
+    pub focus: u32,
+    pub danger: u32,
+    pub danger_text: u32,
+    pub on_danger: u32,
+    pub warning: u32,
+    pub success: u32,
+    pub scrim: u32,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct BandeAppearance {
+    pub dark: u32,
+    pub reduce_motion: u32,
+    pub reduce_transparency: u32,
+    pub increased_contrast: u32,
+    pub translucent: u32,
+    pub light: BandePalette,
+    pub dark_palette: BandePalette,
+}
+
+fn ns_color(color: Color) -> u32 {
+    u32::from(color.r)
+        | u32::from(color.g) << 8
+        | u32::from(color.b) << 16
+        | u32::from(color.a) << 24
+}
+
+fn palette_of(palette: Palette) -> BandePalette {
+    BandePalette {
+        chassis: ns_color(palette.chassis),
+        frame: ns_color(palette.frame),
+        sheet: ns_color(palette.sheet),
+        overlay: ns_color(palette.overlay),
+        panel: ns_color(palette.panel),
+        well: ns_color(palette.well),
+        field: ns_color(palette.field),
+        raised: ns_color(palette.raised),
+        hairline: ns_color(palette.hairline),
+        edge: ns_color(palette.edge),
+        ink: ns_color(palette.ink),
+        ink2: ns_color(palette.ink2),
+        ink3: ns_color(palette.ink3),
+        accent: ns_color(palette.accent),
+        accent_text: ns_color(palette.accent_text),
+        on_accent: ns_color(palette.on_accent),
+        accent_soft: ns_color(palette.accent_soft),
+        focus: ns_color(palette.focus),
+        danger: ns_color(palette.danger),
+        danger_text: ns_color(palette.danger_text),
+        on_danger: ns_color(palette.on_danger),
+        warning: ns_color(palette.warning),
+        success: ns_color(palette.success),
+        scrim: ns_color(palette.scrim),
+    }
+}
+
+fn translucent(appearance: Appearance) -> bool {
+    appearance.palette().frame.a < u8::MAX
+}
+
+fn described(appearance: Appearance) -> BandeAppearance {
+    BandeAppearance {
+        dark: u32::from(appearance.scheme == Scheme::Dark),
+        reduce_motion: u32::from(appearance.reduce_motion),
+        reduce_transparency: u32::from(appearance.reduce_transparency),
+        increased_contrast: u32::from(appearance.contrast == Contrast::Increased),
+        translucent: u32::from(translucent(appearance)),
+        light: palette_of(
+            Appearance {
+                scheme: Scheme::Light,
+                ..appearance
+            }
+            .palette(),
+        ),
+        dark_palette: palette_of(
+            Appearance {
+                scheme: Scheme::Dark,
+                ..appearance
+            }
+            .palette(),
+        ),
+    }
+}
+
 struct Idle;
 
 struct Host {
@@ -118,6 +226,7 @@ struct Host {
     current_text: Option<CString>,
     current_data: Vec<u8>,
     focused: Option<u64>,
+    appearance: Option<Appearance>,
 }
 
 thread_local! {
@@ -361,11 +470,22 @@ impl Host {
                 b: height,
                 ..Queued::default()
             },
-            WindowEvent::AppearanceChanged(_) => Queued {
-                kind: EVENT_APPEARANCE,
-                window,
-                ..Queued::default()
-            },
+            WindowEvent::AppearanceChanged(appearance) => {
+                if !self.parents.iter().any(|(child, _)| *child == window)
+                    && let Some(shown) = self.window(window)
+                {
+                    let _ = shown.set_hosted_backdrop(backdrop_for(appearance));
+                }
+                if self.appearance == Some(appearance) {
+                    return;
+                }
+                self.appearance = Some(appearance);
+                Queued {
+                    kind: EVENT_APPEARANCE,
+                    window,
+                    ..Queued::default()
+                }
+            }
             _ => return,
         };
         self.events.push_back(queued);
@@ -535,9 +655,34 @@ fn text_of(text: *const c_char) -> String {
     }
 }
 
-fn backdrop_of(window: &Window) -> [u8; 4] {
-    let chassis = window.appearance().palette().chassis;
+fn backdrop_for(appearance: Appearance) -> [u8; 4] {
+    if translucent(appearance) {
+        return [0, 0, 0, 0];
+    }
+    let chassis = appearance.palette().chassis;
     [chassis.b, chassis.g, chassis.r, u8::MAX]
+}
+
+/// # Safety
+/// `out` points to writable memory for one `BandeAppearance`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_appearance(out: *mut BandeAppearance) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    let appearance = with_host(None, |host| host.appearance).unwrap_or_default();
+    unsafe { out.write(described(appearance)) };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bande_gecko_set_blur(id: u64, x: f64, y: f64, width: f64, height: f64) {
+    with_host((), |host| {
+        if let Some(window) = host.window(id) {
+            let area = (width > 0.0 && height > 0.0).then(|| area(x, y, width, height));
+            window.set_backdrop(area);
+        }
+    });
 }
 
 /// # Safety
@@ -575,6 +720,7 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
         current_text: None,
         current_data: Vec::new(),
         focused: None,
+        appearance: None,
     }));
     display
 }
@@ -599,7 +745,7 @@ pub unsafe extern "C" fn bande_gecko_open(
         };
         window.set_key_detail(true);
         window.export();
-        let backdrop = backdrop_of(&window);
+        let backdrop = backdrop_for(window.appearance());
         if window.set_hosted_backdrop(backdrop).is_err() {
             return 0;
         }

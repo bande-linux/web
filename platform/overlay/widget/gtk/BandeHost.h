@@ -74,6 +74,43 @@ struct BandeEvent {
   size_t len;
 };
 
+struct BandePalette {
+  uint32_t chassis;
+  uint32_t frame;
+  uint32_t sheet;
+  uint32_t overlay;
+  uint32_t panel;
+  uint32_t well;
+  uint32_t field;
+  uint32_t raised;
+  uint32_t hairline;
+  uint32_t edge;
+  uint32_t ink;
+  uint32_t ink2;
+  uint32_t ink3;
+  uint32_t accent;
+  uint32_t accentText;
+  uint32_t onAccent;
+  uint32_t accentSoft;
+  uint32_t focus;
+  uint32_t danger;
+  uint32_t dangerText;
+  uint32_t onDanger;
+  uint32_t warning;
+  uint32_t success;
+  uint32_t scrim;
+};
+
+struct BandeAppearance {
+  uint32_t dark;
+  uint32_t reduceMotion;
+  uint32_t reduceTransparency;
+  uint32_t increasedContrast;
+  uint32_t translucent;
+  BandePalette light;
+  BandePalette darkPalette;
+};
+
 class BandeHost final {
  public:
   static bool Start();
@@ -113,6 +150,9 @@ class BandeHost final {
                         const size_t* aLengths);
   static void AcceptDrag(uint64_t aWindow, uint32_t aAction);
   static void PrintPdf(const char* aTitle, const char* aPath);
+  static bool GetAppearance(BandeAppearance* aOut);
+  static void SetBlur(uint64_t aWindow, double aX, double aY, double aWidth,
+                      double aHeight);
   static void ChooseFiles(uint64_t aWindow, uint32_t aRequest, uint32_t aMode,
                           const char* aTitle, const char* aFilters,
                           uint32_t aFilterIndex, const char* aName,

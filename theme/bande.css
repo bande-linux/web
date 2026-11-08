@@ -1,33 +1,11 @@
-/* Bande's Datum tokens over Firefox's chrome variables. Appended to browser/themes/linux/browser.css. */
+/* Bande's palette over Firefox's chrome variables. Appended to browser/themes/linux/browser.css. The widget
+   layer defines the --bande-* colours from the live Bande appearance. */
 :root {
-  --bande-chassis: #ECEAE7;
-  --bande-sheet: #FCFBF9;
-  --bande-overlay: #FFFFFF;
-  --bande-well: #E2DFDB;
-  --bande-hairline: #D4D0CB;
-  --bande-edge: #BAB7B2;
-  --bande-ink: #201E1A;
-  --bande-ink2: #5B5752;
-  --bande-ink3: #83807A;
-  --bande-accent: AccentColor;
-  --bande-danger: #D42F34;
-  @media (prefers-color-scheme: dark) {
-    --bande-chassis: #1F2329;
-    --bande-sheet: #272A30;
-    --bande-overlay: #34373C;
-    --bande-well: #31343A;
-    --bande-hairline: #3B3F45;
-    --bande-edge: #575B62;
-    --bande-ink: #E4E6EA;
-    --bande-ink2: #B9BEC6;
-    --bande-ink3: #8D9198;
-    --bande-danger: #CF4040;
-  }
-  --toolbox-bgcolor: var(--bande-chassis) !important;
-  --toolbox-bgcolor-inactive: var(--bande-chassis) !important;
+  --toolbox-bgcolor: var(--bande-frame) !important;
+  --toolbox-bgcolor-inactive: var(--bande-frame) !important;
   --toolbox-textcolor: var(--bande-ink) !important;
   --toolbox-textcolor-inactive: var(--bande-ink3) !important;
-  --toolbar-bgcolor: var(--bande-chassis) !important;
+  --toolbar-bgcolor: transparent !important;
   --toolbar-color: var(--bande-ink) !important;
   --toolbarbutton-icon-fill: var(--bande-ink2) !important;
   --toolbarbutton-border-radius: 6px !important !important;
@@ -62,7 +40,9 @@
 .tab-label { font-size: 13px; }
 menupopup, panel { --panel-border-radius: 10px; }
 menuitem, menu { border-radius: 6px; min-height: 28px; }
-#TabsToolbar, #nav-bar, #PersonalToolbar, #navigator-toolbox { background: var(--bande-chassis) !important; color: var(--bande-ink) !important; }
+#main-window { appearance: none !important; background: transparent !important; }
+#navigator-toolbox { background: var(--bande-frame) !important; color: var(--bande-ink) !important; }
+#TabsToolbar, #nav-bar, #PersonalToolbar { background: transparent !important; color: var(--bande-ink) !important; }
 
 /* Tabs and Bande's window controls in one row. The compositor draws the real control well over the
    first 78 px of a client-side org.bande.Browser window and takes the clicks there (WindowControls

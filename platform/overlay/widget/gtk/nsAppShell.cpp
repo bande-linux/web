@@ -14,6 +14,7 @@
 #include "BandeHost.h"
 #include "nsClipboard.h"
 #include "nsFilePicker.h"
+#include "nsLookAndFeel.h"
 #include "gfxPlatform.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Logging.h"
@@ -124,6 +125,8 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
                                 event.len));
     } else if (event.kind == BandeEventKind::ClipboardChanged) {
       nsClipboard::HandleChanged();
+    } else if (event.kind == BandeEventKind::Appearance) {
+      nsLookAndFeel::HandleAppearanceChanged();
     } else if (event.kind == BandeEventKind::FdReady) {
       BandeFdWatchFire(int(event.a));
     } else {
