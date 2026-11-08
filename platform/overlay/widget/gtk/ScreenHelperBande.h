@@ -10,6 +10,7 @@ class ScreenHelperBande final {
   static void EnsureStarted();
   static void Refresh();
   static void SetScale(double aScale);
+  static double DefaultScale();
 };
 
 #endif

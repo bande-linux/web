@@ -174,7 +174,7 @@ double nsWindow::FractionalScaleFactor() const {
       return scale;
     }
   }
-  return mBandeWindow ? BandeHost::Scale(mBandeWindow) : 1.0;
+  return ScreenHelperBande::DefaultScale();
 }
 
 double nsWindow::GetDefaultScaleInternal() { return FractionalScaleFactor(); }

@@ -14,6 +14,7 @@ using namespace mozilla;
 using namespace mozilla::widget;
 
 static double sScale = 0.0;
+static double sDefaultScale = 0.0;
 static bool sStarted = false;
 
 void ScreenHelperBande::EnsureStarted() {
@@ -24,8 +25,15 @@ void ScreenHelperBande::EnsureStarted() {
   if (nsWaylandDisplay* display = WaylandDisplayGet()) {
     display->RequestAsyncRoundtrip();
     display->WaitForAsyncRoundtrips();
+    display->RequestAsyncRoundtrip();
+    display->WaitForAsyncRoundtrips();
   }
   Refresh();
+}
+
+double ScreenHelperBande::DefaultScale() {
+  EnsureStarted();
+  return sDefaultScale > 0.0 ? sDefaultScale : 1.0;
 }
 
 void ScreenHelperBande::SetScale(double aScale) {
@@ -40,6 +48,7 @@ void ScreenHelperBande::Refresh() {
     return;
   }
   AutoTArray<RefPtr<Screen>, 4> screens;
+  sDefaultScale = 0.0;
   if (nsWaylandDisplay* display = WaylandDisplayGet()) {
     for (const auto& monitor : display->GetMonitors()) {
       if (monitor->pendingChanges || !monitor->pixelWidth) {
@@ -60,6 +69,9 @@ void ScreenHelperBande::Refresh() {
                   : LayoutDeviceIntRect(int32_t(monitor->x * scale),
                                         int32_t(monitor->y * scale),
                                         monitor->pixelWidth, monitor->pixelHeight);
+      if (sDefaultScale <= 0.0) {
+        sDefaultScale = scale;
+      }
       const float refresh = monitor->refresh ? monitor->refresh / 1000.0f : 60.0f;
       screens.AppendElement(MakeRefPtr<Screen>(
           rect, rect, 24, 24, uint32_t(refresh), DesktopToLayoutDeviceScale(scale),
