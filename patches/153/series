@@ -36,3 +36,5 @@ bande/widget/startup.patch
 bande/widget/gfx.patch
 bande/widget/wayland.patch
 bande/widget/services.patch
+bande/widget/accessibility.patch
+bande/widget/webrtc.patch

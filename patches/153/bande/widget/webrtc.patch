@@ -1,0 +1,61 @@
+WebRTC without GLib: no GDK display check for EGL and no GIO shim for PipeWire
+
+--- firefox-esr-153.6.0esr.orig/third_party/libwebrtc/modules/desktop_capture/linux/wayland/egl_dmabuf.cc
++++ firefox-esr-153.6.0esr/third_party/libwebrtc/modules/desktop_capture/linux/wayland/egl_dmabuf.cc
+@@ -19,7 +19,6 @@
+ #include <dlfcn.h>
+ #include <fcntl.h>
+ #include <gbm.h>
+-#include <gdk/gdk.h>
+ #include <libdrm/drm_fourcc.h>
+ #include <spa/param/video/raw.h>
+ #include <sys/stat.h>
+@@ -241,23 +240,11 @@
+ }
+ 
+ static bool IsWaylandDisplay() {
+-  static auto sGdkWaylandDisplayGetType =
+-    (GType (*)(void))dlsym(RTLD_DEFAULT, "gdk_wayland_display_get_type");
+-  if (!sGdkWaylandDisplayGetType) {
+-    return false;
+-  }
+-  return (G_TYPE_CHECK_INSTANCE_TYPE ((gdk_display_get_default()),
+-                                      sGdkWaylandDisplayGetType()));
++  return true;
+ }
+ 
+ static bool IsX11Display() {
+-  static auto sGdkX11DisplayGetType =
+-    (GType (*)(void))dlsym(RTLD_DEFAULT, "gdk_x11_display_get_type");
+-  if (!sGdkX11DisplayGetType) {
+-    return false;
+-  }
+-  return (G_TYPE_CHECK_INSTANCE_TYPE ((gdk_display_get_default()),
+-                                      sGdkX11DisplayGetType()));
++  return false;
+ }
+ 
+ RTC_NO_SANITIZE("cfi-icall")
+--- firefox-esr-153.6.0esr.orig/third_party/libwebrtc/modules/portal/portal_gn/moz.build
++++ firefox-esr-153.6.0esr/third_party/libwebrtc/modules/portal/portal_gn/moz.build
+@@ -64,7 +64,6 @@
+ 
+ UNIFIED_SOURCES += [
+     "/third_party/libwebrtc/modules/portal/pipewire_utils.cc",
+-    "/third_party/libwebrtc/modules/portal/scoped_glib.cc",
+     "/third_party/libwebrtc/modules/portal/xdg_desktop_portal_utils.cc"
+ ]
+ 
+--- firefox-esr-153.6.0esr.orig/third_party/pipewire/libpipewire/moz.build
++++ firefox-esr-153.6.0esr/third_party/pipewire/libpipewire/moz.build
+@@ -4,10 +4,6 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+-if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+-    CXXFLAGS += CONFIG['MOZ_GTK3_CFLAGS']
+-
+-SOURCES += ['mozgio.cpp']
+ if CONFIG["MOZ_SYSTEM_PIPEWIRE"]:
+     OS_LIBS += CONFIG["MOZ_PIPEWIRE_LIBS"]
+ else:

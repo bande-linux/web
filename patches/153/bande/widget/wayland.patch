@@ -199,17 +199,18 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  
 --- firefox-esr-153.6.0esr.orig/widget/gtk/WaylandSurface.cpp
 +++ firefox-esr-153.6.0esr/widget/gtk/WaylandSurface.cpp
-@@ -10,7 +10,8 @@
+@@ -10,7 +10,9 @@
  #include "mozilla/ToString.h"
  #include <dlfcn.h>
  #include <fcntl.h>
 -#include "ScreenHelperGTK.h"
 +#include "prinrval.h"
 +#include "BandeTimers.h"
++#include "ScreenHelperBande.h"
  #include "nsWindow.h"
  #include "DMABufFormats.h"
  #include "mozilla/gfx/gfxVars.h"
-@@ -63,27 +64,7 @@
+@@ -63,27 +65,7 @@
  }
  #endif
  
@@ -238,7 +239,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  
  WaylandSurface::WaylandSurface() = default;
  
-@@ -217,9 +198,9 @@
+@@ -217,9 +199,9 @@
  
    MOZ_DIAGNOSTIC_ASSERT(!mEmulatedVSyncCallbackTimerID, "Already created?");
  
@@ -250,7 +251,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
          RefPtr surface = static_cast<WaylandSurface*>(data);
          LOGS_VERBOSE("[%p]: WaylandSurface emulated frame callbacks",
                       surface->GetLoggingWidget());
-@@ -229,13 +210,12 @@
+@@ -229,13 +211,12 @@
          // Get some timestamp for emulated callback.
          // We don't compare between emulated / none-emulated ones
          // so we're safe here.
@@ -266,7 +267,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
        },
        this);
  }
-@@ -361,7 +341,7 @@
+@@ -361,7 +342,7 @@
      mVSyncEmulateCheck = aVSyncEmulateCheck;
    }
    if (!mVSyncEmulateCheck) {
@@ -275,7 +276,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    }
  }
  
-@@ -538,10 +518,6 @@
+@@ -538,10 +519,6 @@
  void WaylandSurface::GdkCleanUpLocked(const WaylandSurfaceLock& aProofOfLock) {
    LOGWAYLAND("WaylandSurface::GdkCleanUp()");
    AssertIsOnMainThread();
@@ -286,7 +287,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    mIsPendingGdkCleanup = false;
  }
  
-@@ -1107,67 +1083,6 @@
+@@ -1107,67 +1084,6 @@
    mGdkCommitCallback = nullptr;
  }
  
@@ -354,7 +355,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  LayoutDeviceIntSize WaylandSurface::GetScaledSize(
      const DesktopIntSize& aSize) const {
    DesktopIntRect rect(
-@@ -1436,12 +1351,6 @@
+@@ -1436,12 +1352,6 @@
    }
  }
  
@@ -367,12 +368,12 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  double WaylandSurface::GetScale() const {
  #ifdef MOZ_LOGGING
    static float lastLoggedScale = 0.0;
-@@ -1471,7 +1380,7 @@
+@@ -1471,7 +1381,7 @@
    }
  
    LOGVERBOSE("WaylandSurface::GetScale() fall back to monitor scale!");
 -  return ScreenHelperGTK::GetGTKMonitorFractionalScaleFactor();
-+  return 1.0;
++  return ScreenHelperBande::DefaultScale();
  }
  
  void WaylandSurface::SetParentLocked(const WaylandSurfaceLock& aProofOfLock,
@@ -585,16 +586,17 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
      handle = 0;
 --- firefox-esr-153.6.0esr.orig/widget/gtk/nsWaylandDisplay.cpp
 +++ firefox-esr-153.6.0esr/widget/gtk/nsWaylandDisplay.cpp
-@@ -3,6 +3,8 @@
+@@ -3,6 +3,9 @@
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
  
  #include "nsWaylandDisplay.h"
 +#include "BandeHost.h"
++#include "ScreenHelperBande.h"
 +#include <unistd.h>
  #include "DMABufFormats.h"
  
  #include "base/message_loop.h"    // for MessageLoop
-@@ -14,12 +16,9 @@
+@@ -14,12 +17,9 @@
  #include "mozilla/StaticPrefs_general.h"
  #include "mozilla/Sprintf.h"
  #include "WidgetUtilsGtk.h"
@@ -607,7 +609,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  #include "nsIAppStartup.h"
  #include "nsServiceManagerUtils.h"
  #include "nsThreadUtils.h"
-@@ -58,11 +57,10 @@
+@@ -58,11 +58,10 @@
  }
  
  wl_display* WaylandDisplayGetWLDisplay() {
@@ -621,7 +623,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  nsWaylandDisplay* WaylandDisplayGet() {
-@@ -94,11 +92,7 @@
+@@ -94,11 +93,7 @@
      if (!aSurface) {
        mWindow = nullptr;
      } else {
@@ -634,7 +636,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
      }
      return mWindow;
    }
-@@ -131,9 +125,6 @@
+@@ -131,9 +126,6 @@
      // nsWindow::OnSmoothScrollEvent() may spin event loop so
      // mWindow/mSource/delta may be replaced.
      int32_t source = mSource;
@@ -644,7 +646,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
      mSource = -1;
      mDeltaX = mDeltaY = 0.0f;
  
-@@ -142,9 +133,6 @@
+@@ -142,9 +134,6 @@
        return;
      }
  
@@ -654,7 +656,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    }
  
    void Clear() { mWindow = nullptr; }
-@@ -159,29 +147,12 @@
+@@ -159,29 +148,12 @@
  
  static WaylandPointerEvent sHoldGesture;
  
@@ -689,7 +691,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  
  static const struct zwp_pointer_gesture_hold_v1_listener gesture_hold_listener =
      {gesture_hold_begin, gesture_hold_end};
-@@ -362,7 +333,7 @@
+@@ -362,7 +334,7 @@
   */
  static void keyboard_handle_keymap(void* data, struct wl_keyboard* wl_keyboard,
                                     uint32_t format, int fd, uint32_t size) {
@@ -698,7 +700,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  static void keyboard_handle_enter(void* data, struct wl_keyboard* keyboard,
-@@ -373,7 +344,6 @@
+@@ -373,7 +345,6 @@
  
  static void keyboard_handle_leave(void* data, struct wl_keyboard* keyboard,
                                    uint32_t serial, struct wl_surface* surface) {
@@ -706,7 +708,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  static void keyboard_handle_key(void* data, struct wl_keyboard* keyboard,
-@@ -382,9 +352,6 @@
+@@ -382,9 +353,6 @@
    if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
      gLastSerial = serial;
    }
@@ -716,7 +718,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  static void keyboard_handle_modifiers(void* data, struct wl_keyboard* keyboard,
-@@ -411,7 +378,6 @@
+@@ -411,7 +379,6 @@
    if (mKeyboard) {
      wl_keyboard_release(mKeyboard);
      mKeyboard = nullptr;
@@ -724,15 +726,117 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    }
  }
  
-@@ -773,7 +739,6 @@
+@@ -700,6 +667,7 @@
+       height);
+   monitor->pixelWidth = width;
+   monitor->pixelHeight = height;
++  monitor->refresh = refresh;
+   monitor->pendingChanges = true;
+ }
+ 
+@@ -707,6 +675,7 @@
+                                 int32_t scale) {
+   auto* monitor = static_cast<nsWaylandDisplay::MonitorConfig*>(data);
+   LOG("nsWaylandDisplay ID %d Scale change [%d]", monitor->id, scale);
++  monitor->scale = scale;
+   monitor->pendingChanges = true;
+ }
+ 
+@@ -725,9 +694,62 @@
+     output_handle_scale,
+ };
+ 
++static void xdg_output_handle_logical_position(void* data,
++                                               struct zxdg_output_v1* output,
++                                               int32_t x, int32_t y) {
++  auto* monitor = static_cast<nsWaylandDisplay::MonitorConfig*>(data);
++  monitor->logicalX = x;
++  monitor->logicalY = y;
++}
++
++static void xdg_output_handle_logical_size(void* data,
++                                           struct zxdg_output_v1* output,
++                                           int32_t width, int32_t height) {
++  auto* monitor = static_cast<nsWaylandDisplay::MonitorConfig*>(data);
++  monitor->logicalWidth = width;
++  monitor->logicalHeight = height;
++}
++
++static void xdg_output_handle_done(void* data, struct zxdg_output_v1* output) {
++  WaylandDisplayGet()->RefreshScreens();
++}
++
++static void xdg_output_handle_name(void* data, struct zxdg_output_v1* output,
++                                   const char* name) {}
++
++static void xdg_output_handle_description(void* data,
++                                          struct zxdg_output_v1* output,
++                                          const char* description) {}
++
++static const struct zxdg_output_v1_listener xdg_output_listener = {
++    xdg_output_handle_logical_position,
++    xdg_output_handle_logical_size,
++    xdg_output_handle_done,
++    xdg_output_handle_name,
++    xdg_output_handle_description,
++};
++
++void nsWaylandDisplay::WatchXdgOutput(MonitorConfig* aMonitor) {
++  if (!mXdgOutputManager || aMonitor->xdgOutput) {
++    return;
++  }
++  aMonitor->xdgOutput =
++      zxdg_output_manager_v1_get_xdg_output(mXdgOutputManager, aMonitor->wlOutput);
++  zxdg_output_v1_add_listener(aMonitor->xdgOutput, &xdg_output_listener,
++                              aMonitor);
++}
++
++void nsWaylandDisplay::SetXdgOutputManager(zxdg_output_manager_v1* aManager) {
++  mXdgOutputManager = aManager;
++  for (const auto& monitor : mMonitors) {
++    WatchXdgOutput(monitor.get());
++  }
++}
++
+ void nsWaylandDisplay::AddMonitorConfig(int aId, wl_output* aWlOutput) {
+   LOG("nsWaylandDisplay add monitor ID %d num %zu", aId, mMonitors.Length());
+-  mMonitors.AppendElement(MakeUnique<MonitorConfig>(aId, aWlOutput));
++  WatchXdgOutput(
++      mMonitors.AppendElement(MakeUnique<MonitorConfig>(aId, aWlOutput))->get());
+ }
+ 
+ nsWaylandDisplay::MonitorConfig::MonitorConfig(int aId,
+@@ -739,6 +761,7 @@
+ 
+ nsWaylandDisplay::MonitorConfig::~MonitorConfig() {
+   LOG("~MonitorConfig() delete ID %d", id);
++  MozClearPointer(xdgOutput, zxdg_output_v1_destroy);
+   MozClearPointer(wlOutput, wl_output_release);
+ }
+ 
+@@ -773,7 +796,7 @@
        return;
      }
    }
 -  ScreenHelperGTK::RequestRefreshScreens();
++  ScreenHelperBande::Refresh();
  }
  
  static void global_registry_handler(void* data, wl_registry* registry,
-@@ -938,7 +903,9 @@
+@@ -899,6 +922,12 @@
+     auto* output = WaylandRegistryBind<wl_output>(
+         registry, id, &wl_output_interface, WL_OUTPUT_RELEASE_SINCE_VERSION);
+     display->AddMonitorConfig(id, output);
++  } else if (iface.EqualsLiteral("zxdg_output_manager_v1") && version >= 2) {
++    uint32_t vers =
++        MIN(version, (uint32_t)zxdg_output_manager_v1_interface.version);
++    auto* manager = WaylandRegistryBind<zxdg_output_manager_v1>(
++        registry, id, &zxdg_output_manager_v1_interface, vers);
++    display->SetXdgOutputManager(manager);
+   } else if (iface.EqualsLiteral("wl_fixes")) {
+     // wl_fixes_interface was introduced in libwayland-client 1.24, but
+     // Ubuntu 22.04 still ships 1.20.
+@@ -938,7 +967,9 @@
      global_registry_handler, global_registry_remover};
  
  nsWaylandDisplay::~nsWaylandDisplay() {
@@ -743,7 +847,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    MozClearPointer(mColorManager, wp_color_manager_v1_destroy);
    MozClearPointer(mColorRepresentationManager,
                    wp_color_representation_manager_v1_destroy);
-@@ -950,8 +917,7 @@
+@@ -950,8 +981,7 @@
                                                wl_callback* aCallback,
                                                uint32_t aTime) {
    auto* display = static_cast<nsWaylandDisplay*>(aData);
@@ -753,7 +857,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    wl_callback_destroy(aCallback);
  }
  
-@@ -962,13 +928,13 @@
+@@ -962,13 +992,13 @@
    LOG("nsWaylandDisplay::RequestAsyncRoundtrip()");
    wl_callback* callback = wl_display_sync(mDisplay);
    wl_callback_add_listener(callback, &async_roundtrip_listener, this);
@@ -769,7 +873,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
      if (wl_display_dispatch(mDisplay) < 0) {
        NS_WARNING("Failed to get events from Wayland display!");
        return;
-@@ -1053,7 +1019,7 @@
+@@ -1053,7 +1083,7 @@
  MOZ_NEVER_INLINE static void WlLogHandler_UnknownObject(const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -778,7 +882,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 20% of crashes - Example: "wp_viewport#296: error 2: source rectangle out
-@@ -1062,7 +1028,7 @@
+@@ -1062,7 +1092,7 @@
      const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -787,7 +891,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 20% of crashes - Example: "wl_display#1: error 1: invalid arguments for
-@@ -1071,7 +1037,7 @@
+@@ -1071,7 +1101,7 @@
      const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -796,7 +900,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 12% of crashes - Example: "wp_color_manager_v1#44: error -1: Invalid output
-@@ -1080,7 +1046,7 @@
+@@ -1080,7 +1110,7 @@
      const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -805,7 +909,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 8% of crashes - Example: "Message length 22222 exceeds limit 4096"
-@@ -1088,7 +1054,7 @@
+@@ -1088,7 +1118,7 @@
      const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -814,7 +918,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 4% of crashes - Example: "wl_display#1: error 0: invalid object 61246"
-@@ -1096,7 +1062,7 @@
+@@ -1096,7 +1126,7 @@
      const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -823,7 +927,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 4% of crashes - Example: "failed to import supplied dmabufs: EGL failed to
-@@ -1105,7 +1071,7 @@
+@@ -1105,7 +1135,7 @@
      const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -832,7 +936,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 4% of crashes - Example: "wl_registry@36: error 0: invalid global
-@@ -1113,7 +1079,7 @@
+@@ -1113,7 +1143,7 @@
  MOZ_NEVER_INLINE static void WlLogHandler_RegistryError(const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -841,7 +945,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 4% of crashes - Example: "invalid object (277), type (wl_callback), message
-@@ -1121,7 +1087,7 @@
+@@ -1121,7 +1151,7 @@
  MOZ_NEVER_INLINE static void WlLogHandler_CallbackInvalid(const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -850,7 +954,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // 4% of crashes - Example: "error marshalling arguments for set_surface
-@@ -1129,7 +1095,7 @@
+@@ -1129,7 +1159,7 @@
  MOZ_NEVER_INLINE static void WlLogHandler_MarshallingError(const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -859,7 +963,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // xdg_surface buffer mismatch - Example: "dg_wm_base@17: error 4: xdg_surface
-@@ -1138,7 +1104,7 @@
+@@ -1138,7 +1168,7 @@
      const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -868,7 +972,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  }
  
  // Timestamp of the last "still attached" message ignored by WlLogHandler.
-@@ -1238,13 +1204,13 @@
+@@ -1238,13 +1268,13 @@
    // Fallback for unmatched patterns - use original inline code
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -884,7 +988,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
                    << " - scheduling graceful shutdown";
    // Called from the WaylandProxy thread. Dispatch to the main thread to
    // trigger a clean Firefox shutdown instead of crashing.
-@@ -1263,7 +1229,7 @@
+@@ -1263,7 +1293,7 @@
      const char* error) {
    MOZ_CRASH_UNSAFE_PRINTF("(%s) %s Proxy: %s",
                            GetDesktopEnvironmentIdentifier().get(), error,
@@ -911,7 +1015,33 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  
  namespace mozilla::widget {
  
-@@ -233,7 +233,7 @@
+@@ -185,13 +185,25 @@
+     int y = 0;
+     int pixelWidth = 0;
+     int pixelHeight = 0;
++    int scale = 1;
++    int refresh = 0;
++    int logicalX = 0;
++    int logicalY = 0;
++    int logicalWidth = 0;
++    int logicalHeight = 0;
+     wl_output* wlOutput = nullptr;
++    zxdg_output_v1* xdgOutput = nullptr;
+     bool pendingChanges = true;
+   };
+ 
+   void AddMonitorConfig(int aId, wl_output* aWlOutput);
++  void SetXdgOutputManager(zxdg_output_manager_v1* aManager);
++  void WatchXdgOutput(MonitorConfig* aMonitor);
+   MonitorConfig* GetMonitorConfig(int x, int y);
+   bool RemoveMonitorConfig(int aId);
++  const nsTArray<UniquePtr<MonitorConfig>>& GetMonitors() const {
++    return mMonitors;
++  }
+ 
+   ~nsWaylandDisplay();
+ 
+@@ -233,7 +245,7 @@
    xx_session_v1* mWaylandSession = nullptr;
    nsCString mWaylandSessionId;
    RefPtr<DMABufFormats> mFormats;
@@ -920,6 +1050,14 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  
    struct ColorManagerSupportedFeature {
      bool mICC = false;
+@@ -257,6 +269,7 @@
+   bool mIsPrimarySelectionEnabled = false;
+ 
+   AutoTArray<UniquePtr<MonitorConfig>, 4> mMonitors;
++  zxdg_output_manager_v1* mXdgOutputManager = nullptr;
+ };
+ 
+ wl_display* WaylandDisplayGetWLDisplay();
 --- firefox-esr-153.6.0esr.orig/widget/gtk/wayland/xdg-output-unstable-v1-protocol.c
 +++ firefox-esr-153.6.0esr/widget/gtk/wayland/xdg-output-unstable-v1-protocol.c
 @@ -24,7 +24,7 @@

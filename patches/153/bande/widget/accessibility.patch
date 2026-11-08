@@ -1,0 +1,102 @@
+Build accessibility with the platform-neutral layer instead of ATK, a seam for a Bande AT-SPI bridge
+
+--- firefox-esr-153.6.0esr.orig/accessible/aom/moz.build
++++ firefox-esr-153.6.0esr/accessible/aom/moz.build
+@@ -17,7 +17,7 @@
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+     LOCAL_INCLUDES += [
+-        "/accessible/atk",
++        "/accessible/other",
+     ]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+     LOCAL_INCLUDES += [
+--- firefox-esr-153.6.0esr.orig/accessible/base/moz.build
++++ firefox-esr-153.6.0esr/accessible/base/moz.build
+@@ -96,7 +96,7 @@
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+     LOCAL_INCLUDES += [
+-        "/accessible/atk",
++        "/accessible/other",
+         "/gfx/cairo/cairo/src",
+     ]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+--- firefox-esr-153.6.0esr.orig/accessible/generic/moz.build
++++ firefox-esr-153.6.0esr/accessible/generic/moz.build
+@@ -36,7 +36,7 @@
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+     LOCAL_INCLUDES += [
+-        "/accessible/atk",
++        "/accessible/other",
+     ]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+     LOCAL_INCLUDES += [
+--- firefox-esr-153.6.0esr.orig/accessible/html/moz.build
++++ firefox-esr-153.6.0esr/accessible/html/moz.build
+@@ -25,7 +25,7 @@
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+     LOCAL_INCLUDES += [
+-        "/accessible/atk",
++        "/accessible/other",
+     ]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+     LOCAL_INCLUDES += [
+--- firefox-esr-153.6.0esr.orig/accessible/ipc/moz.build
++++ firefox-esr-153.6.0esr/accessible/ipc/moz.build
+@@ -10,7 +10,7 @@
+ else:
+     if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+         LOCAL_INCLUDES += [
+-            "/accessible/atk",
++            "/accessible/other",
+         ]
+     elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
+         LOCAL_INCLUDES += [
+--- firefox-esr-153.6.0esr.orig/accessible/moz.build
++++ firefox-esr-153.6.0esr/accessible/moz.build
+@@ -4,9 +4,7 @@
+ 
+ toolkit = CONFIG["MOZ_WIDGET_TOOLKIT"]
+ 
+-if toolkit == "gtk":
+-    DIRS += ["atk"]
+-elif toolkit == "windows":
++if toolkit == "windows":
+     DIRS += ["windows"]
+ elif toolkit == "cocoa":
+     DIRS += ["mac"]
+--- firefox-esr-153.6.0esr.orig/accessible/other/Platform.cpp
++++ firefox-esr-153.6.0esr/accessible/other/Platform.cpp
+@@ -37,3 +37,7 @@
+                                      uint16_t aPriority) {}
+ 
+ void a11y::GetHumanReadableInstantiatorStr(nsAString& aResult) {}
++
++uint64_t a11y::GetCacheDomainsForKnownClients(uint64_t aCacheDomains) {
++  return aCacheDomains;
++}
+--- firefox-esr-153.6.0esr.orig/accessible/xpcom/moz.build
++++ firefox-esr-153.6.0esr/accessible/xpcom/moz.build
+@@ -38,7 +38,7 @@
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+     LOCAL_INCLUDES += [
+-        "/accessible/atk",
++        "/accessible/other",
+     ]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+     LOCAL_INCLUDES += [
+--- firefox-esr-153.6.0esr.orig/accessible/xul/moz.build
++++ firefox-esr-153.6.0esr/accessible/xul/moz.build
+@@ -29,7 +29,7 @@
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+     LOCAL_INCLUDES += [
+-        "/accessible/atk",
++        "/accessible/other",
+     ]
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
+     LOCAL_INCLUDES += [

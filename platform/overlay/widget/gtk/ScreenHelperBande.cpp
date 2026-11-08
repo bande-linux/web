@@ -4,17 +4,19 @@
 
 #include "ScreenHelperBande.h"
 
+#include <atomic>
 #include <cmath>
 
 #include "mozilla/widget/ScreenManager.h"
 #include "mozilla/widget/nsWaylandDisplay.h"
+#include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
 
 static double sScale = 0.0;
-static double sDefaultScale = 0.0;
+static std::atomic<double> sDefaultScale{0.0};
 static bool sStarted = false;
 
 void ScreenHelperBande::EnsureStarted() {
@@ -32,8 +34,11 @@ void ScreenHelperBande::EnsureStarted() {
 }
 
 double ScreenHelperBande::DefaultScale() {
-  EnsureStarted();
-  return sDefaultScale > 0.0 ? sDefaultScale : 1.0;
+  if (NS_IsMainThread()) {
+    EnsureStarted();
+  }
+  const double scale = sDefaultScale;
+  return scale > 0.0 ? scale : 1.0;
 }
 
 void ScreenHelperBande::SetScale(double aScale) {
@@ -48,7 +53,7 @@ void ScreenHelperBande::Refresh() {
     return;
   }
   AutoTArray<RefPtr<Screen>, 4> screens;
-  sDefaultScale = 0.0;
+  double defaultScale = 0.0;
   if (nsWaylandDisplay* display = WaylandDisplayGet()) {
     for (const auto& monitor : display->GetMonitors()) {
       if (monitor->pendingChanges || !monitor->pixelWidth) {
@@ -69,8 +74,8 @@ void ScreenHelperBande::Refresh() {
                   : LayoutDeviceIntRect(int32_t(monitor->x * scale),
                                         int32_t(monitor->y * scale),
                                         monitor->pixelWidth, monitor->pixelHeight);
-      if (sDefaultScale <= 0.0) {
-        sDefaultScale = scale;
+      if (defaultScale <= 0.0) {
+        defaultScale = scale;
       }
       const float refresh = monitor->refresh ? monitor->refresh / 1000.0f : 60.0f;
       screens.AppendElement(MakeRefPtr<Screen>(
@@ -79,6 +84,7 @@ void ScreenHelperBande::Refresh() {
           Screen::IsPseudoDisplay::No, Screen::IsHDR::No, 80.0f, 1000.0f));
     }
   }
+  sDefaultScale = defaultScale;
   if (screens.IsEmpty()) {
     const LayoutDeviceIntRect rect(0, 0, 1920, 1200);
     screens.AppendElement(MakeRefPtr<Screen>(

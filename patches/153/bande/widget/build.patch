@@ -115,7 +115,7 @@ Build the Bande widget layer instead of GTK: no GTK, GLib or D-Bus in configure,
          return True
  
  
-@@ -3512,18 +3512,10 @@
+@@ -3512,20 +3512,10 @@
  # Gtk+
  # ==============================================================
  with only_when(toolkit_gtk):
@@ -131,13 +131,15 @@ Build the Bande widget layer instead of GTK: no GTK, GLib or D-Bus in configure,
 -
 -    set_define("GLIB_VERSION_MIN_REQUIRED", "GLIB_VERSION_2_42")
 -    set_define("GLIB_VERSION_MAX_ALLOWED", "GLIB_VERSION_2_42")
+-
+-    set_define("MOZ_ACCESSIBILITY_ATK", True, when=accessibility)
 +    set_config("MOZ_GTK3_CFLAGS", [])
 +    set_config("MOZ_GTK3_LIBS", [])
 +    set_config("GLIB_CFLAGS", [])
 +    set_config("GLIB_LIBS", [])
  
-     set_define("MOZ_ACCESSIBILITY_ATK", True, when=accessibility)
- 
+ # DBus
+ # ==============================================================
 --- firefox-esr-153.6.0esr.orig/toolkit/toolkit.mozbuild
 +++ firefox-esr-153.6.0esr/toolkit/toolkit.mozbuild
 @@ -146,7 +146,6 @@
