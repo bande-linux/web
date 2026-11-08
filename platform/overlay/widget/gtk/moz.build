@@ -63,6 +63,7 @@ UNIFIED_SOURCES += [
     "NativeKeyBindings.cpp",
     "NativeMenuSupport.cpp",
     "nsAppShell.cpp",
+    "nsBandeAlertsService.cpp",
     "nsBandeIdleService.cpp",
     "nsBidiKeyboard.cpp",
     "nsClipboard.cpp",

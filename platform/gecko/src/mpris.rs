@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -248,6 +249,16 @@ impl Player {
 
 pub(crate) struct Mpris {
     connection: Connection,
+    art_file: Option<PathBuf>,
+    art_count: u32,
+}
+
+impl Drop for Mpris {
+    fn drop(&mut self) {
+        if let Some(path) = self.art_file.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 pub(crate) enum Change {
@@ -289,7 +300,38 @@ impl Mpris {
             .ok()?
             .build()
             .ok()?;
-        Some(Self { connection })
+        Some(Self {
+            connection,
+            art_file: None,
+            art_count: 0,
+        })
+    }
+
+    pub(crate) fn set_track(&mut self, title: String, artist: String, album: String, art: &[u8]) {
+        if let Some(path) = self.art_file.take() {
+            let _ = std::fs::remove_file(path);
+        }
+        let mut art_url = String::new();
+        if !art.is_empty()
+            && let Some(folder) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+        {
+            self.art_count += 1;
+            let path = folder.join(format!(
+                "bande-browser-art-{}-{}.png",
+                std::process::id(),
+                self.art_count
+            ));
+            if std::fs::write(&path, art).is_ok() {
+                art_url = format!("file://{}", path.display());
+                self.art_file = Some(path);
+            }
+        }
+        self.change(Change::Track(Track {
+            title,
+            artist,
+            album,
+            art: art_url,
+        }));
     }
 
     pub(crate) fn change(&self, change: Change) {

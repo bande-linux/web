@@ -14,6 +14,7 @@
 #include "BandeHost.h"
 #include "BandePortal.h"
 #include "BandeWakeLock.h"
+#include "nsBandeAlertsService.h"
 #include "nsClipboard.h"
 #include "nsFilePicker.h"
 #include "nsLookAndFeel.h"
@@ -139,6 +140,17 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
                event.kind == BandeEventKind::ScreenCastClosed ||
                event.kind == BandeEventKind::Camera) {
       BandePortalHandle(event);
+    } else if (event.kind == BandeEventKind::Notification) {
+      nsDependentCSubstring answer(reinterpret_cast<const char*>(event.data),
+                                   event.len);
+      const int32_t split = answer.FindChar('\n');
+      nsDependentCString id(event.text ? event.text : "");
+      if (split >= 0) {
+        nsBandeAlertsService::HandleAction(id, Substring(answer, 0, split),
+                                           Substring(answer, split + 1));
+      } else {
+        nsBandeAlertsService::HandleAction(id, answer, ""_ns);
+      }
     } else if (event.kind == BandeEventKind::MediaKey) {
       HandleBandeMediaAction(event.a, event.x);
     } else if (event.kind == BandeEventKind::Remote) {

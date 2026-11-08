@@ -7,6 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 mod mpris;
+mod notify;
 mod portal;
 mod remote;
 mod screencast;
@@ -49,6 +50,7 @@ pub const EVENT_SCREEN_CAST_CLOSED: u32 = 28;
 pub const EVENT_CAMERA: u32 = 29;
 pub const EVENT_REMOTE: u32 = 30;
 pub const EVENT_MEDIA_KEY: u32 = 31;
+pub const EVENT_NOTIFICATION: u32 = 32;
 
 const DRAG_COPY: u32 = 1;
 const DRAG_MOVE: u32 = 2;
@@ -238,6 +240,7 @@ struct Host {
     portals: Vec<(u64, async_channel::Sender<()>)>,
     inhibitors: Vec<(u64, Sender<()>)>,
     mpris: Option<mpris::Mpris>,
+    notifier: Option<notify::Notifier>,
 }
 
 thread_local! {
@@ -735,6 +738,7 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
         portals: Vec::new(),
         inhibitors: Vec::new(),
         mpris: None,
+        notifier: None,
     }));
     display
 }
@@ -1462,20 +1466,24 @@ pub extern "C" fn bande_gecko_mpris_status(status: u32) {
 }
 
 /// # Safety
-/// The arguments are null or NUL-terminated strings.
+/// The strings are null or NUL-terminated; `art` is null or points to `art_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bande_gecko_mpris_track(
     title: *const c_char,
     artist: *const c_char,
     album: *const c_char,
-    art: *const c_char,
+    art: *const u8,
+    art_len: usize,
 ) {
-    mpris_change(mpris::Change::Track(mpris::Track {
-        title: text_of(title),
-        artist: text_of(artist),
-        album: text_of(album),
-        art: text_of(art),
-    }));
+    let art = match art.is_null() || art_len == 0 {
+        true => Vec::new(),
+        false => unsafe { std::slice::from_raw_parts(art, art_len) }.to_vec(),
+    };
+    with_host((), |host| {
+        if let Some(mpris) = &mut host.mpris {
+            mpris.set_track(text_of(title), text_of(artist), text_of(album), &art);
+        }
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -1489,5 +1497,76 @@ pub extern "C" fn bande_gecko_mpris_position(duration: f64, position: f64, rate:
         duration,
         position,
         rate,
+    });
+}
+
+fn notifier(host: &mut Host) -> Option<&notify::Notifier> {
+    if host.notifier.is_none() {
+        let sender = std::sync::Mutex::new(host.answer_sender.clone());
+        let wake = host.answer_wake.try_clone().ok()?;
+        host.notifier = notify::Notifier::open(move |id, action, token| {
+            let Ok(sender) = sender.lock() else {
+                return;
+            };
+            answer(
+                &sender,
+                &wake,
+                Queued {
+                    kind: EVENT_NOTIFICATION,
+                    text: CString::new(id).ok(),
+                    data: format!("{action}\n{token}").into_bytes(),
+                    ..Queued::default()
+                },
+            );
+        });
+    }
+    host.notifier.as_ref()
+}
+
+/// # Safety
+/// Strings are null or NUL-terminated; `icon` is null or points to `icon_len` bytes.
+/// `buttons` holds one `label<TAB>action` line per button.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_notify(
+    id: *const c_char,
+    title: *const c_char,
+    body: *const c_char,
+    icon: *const u8,
+    icon_len: usize,
+    buttons: *const c_char,
+    silent: bool,
+    persistent: bool,
+) -> bool {
+    let (id, title, body, buttons) = (text_of(id), text_of(title), text_of(body), text_of(buttons));
+    let icon = match icon.is_null() || icon_len == 0 {
+        true => &[][..],
+        false => unsafe { std::slice::from_raw_parts(icon, icon_len) },
+    };
+    let buttons = buttons
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(label, action)| (label.to_owned(), action.to_owned()))
+        .collect();
+    let notice = notify::Notice {
+        id: &id,
+        title: &title,
+        body: &body,
+        icon,
+        buttons,
+        silent,
+        persistent,
+    };
+    with_host(false, |host| notifier(host).is_some_and(|notifier| notifier.show(&notice)))
+}
+
+/// # Safety
+/// `id` is a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_unnotify(id: *const c_char) {
+    let id = text_of(id);
+    with_host((), |host| {
+        if let Some(notifier) = notifier(host) {
+            notifier.remove(&id);
+        }
     });
 }

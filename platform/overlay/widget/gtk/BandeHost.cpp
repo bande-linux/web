@@ -53,8 +53,10 @@ static LazyLogModule sBandeLog("Bande");
   X(uninhibit, void, uint64_t)                                         \
   X(mpris_open, bool, const char*, const char*, const char*)           \
   X(mpris_close, void)                                                 \
+  X(notify, bool, const char*, const char*, const char*, const uint8_t*, size_t, const char*, bool, bool) \
+  X(unnotify, void, const char*)                                       \
   X(mpris_status, void, uint32_t)                                      \
-  X(mpris_track, void, const char*, const char*, const char*, const char*) \
+  X(mpris_track, void, const char*, const char*, const char*, const uint8_t*, size_t) \
   X(mpris_keys, void, uint32_t)                                        \
   X(mpris_position, void, double, double, double)                      \
   X(set_blur, void, uint64_t, double, double, double, double)          \
@@ -245,11 +247,23 @@ bool BandeHost::MprisOpen(const char* aName, const char* aIdentity,
                           const char* aDesktopEntry) {
   return IsActive() && s_mpris_open(aName, aIdentity, aDesktopEntry);
 }
+bool BandeHost::Notify(const char* aId, const char* aTitle, const char* aBody,
+                       const uint8_t* aIcon, size_t aIconLength,
+                       const char* aButtons, bool aSilent, bool aPersistent) {
+  return IsActive() && s_notify(aId, aTitle, aBody, aIcon, aIconLength,
+                                aButtons, aSilent, aPersistent);
+}
+void BandeHost::Unnotify(const char* aId) {
+  if (IsActive()) {
+    s_unnotify(aId);
+  }
+}
 void BandeHost::MprisClose() { s_mpris_close(); }
 void BandeHost::MprisStatus(uint32_t aStatus) { s_mpris_status(aStatus); }
 void BandeHost::MprisTrack(const char* aTitle, const char* aArtist,
-                           const char* aAlbum, const char* aArt) {
-  s_mpris_track(aTitle, aArtist, aAlbum, aArt);
+                           const char* aAlbum, const uint8_t* aArt,
+                           size_t aArtLength) {
+  s_mpris_track(aTitle, aArtist, aAlbum, aArt, aArtLength);
 }
 void BandeHost::MprisKeys(uint32_t aKeys) { s_mpris_keys(aKeys); }
 void BandeHost::MprisPosition(double aDuration, double aPosition,

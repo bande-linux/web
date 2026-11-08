@@ -9,8 +9,10 @@
 #include "BandeHost.h"
 #include "mozilla/XREAppData.h"
 #include "mozilla/dom/MediaControlKeySource.h"
+#include "mozilla/dom/MediaControlUtils.h"
 #include "mozilla/dom/MediaSession.h"
 #include "nsAppRunner.h"
+#include "nsMimeTypes.h"
 #include "nsPrintfCString.h"
 
 namespace mozilla::widget {
@@ -77,9 +79,25 @@ class BandeMediaKeys final : public dom::MediaControlKeySource {
     if (!mOpened) {
       return;
     }
+    nsCOMPtr<nsIInputStream> stream;
+    uint32_t size = 0;
+    char* data = nullptr;
+    for (const dom::MediaImageData& image : aMetadata.mArtwork) {
+      if (image.mDataSurface &&
+          NS_SUCCEEDED(dom::GetEncodedImageBuffer(image.mDataSurface,
+                                                  nsLiteralCString(IMAGE_PNG),
+                                                  getter_AddRefs(stream), &size,
+                                                  &data)) &&
+          data && size) {
+        break;
+      }
+      data = nullptr;
+      size = 0;
+    }
     BandeHost::MprisTrack(NS_ConvertUTF16toUTF8(aMetadata.mTitle).get(),
                           NS_ConvertUTF16toUTF8(aMetadata.mArtist).get(),
-                          NS_ConvertUTF16toUTF8(aMetadata.mAlbum).get(), "");
+                          NS_ConvertUTF16toUTF8(aMetadata.mAlbum).get(),
+                          reinterpret_cast<const uint8_t*>(data), size);
   }
 
   void SetSupportedMediaKeys(const MediaKeysArray& aSupportedKeys) override {

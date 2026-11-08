@@ -45,6 +45,7 @@ enum class BandeEventKind : uint32_t {
   Camera = 29,
   Remote = 30,
   MediaKey = 31,
+  Notification = 32,
 };
 
 enum BandeModifier : uint32_t {
@@ -170,9 +171,14 @@ class BandeHost final {
   static bool MprisOpen(const char* aName, const char* aIdentity,
                         const char* aDesktopEntry);
   static void MprisClose();
+  static bool Notify(const char* aId, const char* aTitle, const char* aBody,
+                     const uint8_t* aIcon, size_t aIconLength,
+                     const char* aButtons, bool aSilent, bool aPersistent);
+  static void Unnotify(const char* aId);
   static void MprisStatus(uint32_t aStatus);
   static void MprisTrack(const char* aTitle, const char* aArtist,
-                         const char* aAlbum, const char* aArt);
+                         const char* aAlbum, const uint8_t* aArt,
+                         size_t aArtLength);
   static void MprisKeys(uint32_t aKeys);
   static void MprisPosition(double aDuration, double aPosition, double aRate);
   static void Uninhibit(uint64_t aInhibitor);
