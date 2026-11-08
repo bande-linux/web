@@ -182,7 +182,7 @@ NS_IMETHODIMP nsBandeAlertsService::GetHistory(nsTArray<nsString>& aResult) {
 
 NS_IMETHODIMP nsBandeAlertsService::Teardown() {
   for (const auto& entry : mShown) {
-    BandeHost::Unnotify(entry.GetKey().get());
+    BandeHost::Unnotify(PromiseFlatCString(entry.GetKey()).get());
   }
   mShown.Clear();
   mIds.Clear();
