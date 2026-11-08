@@ -75,6 +75,11 @@ UNIFIED_SOURCES += [
     "WindowSurfaceWaylandMultiBuffer.cpp",
 ]
 
+if CONFIG["NS_PRINTING"]:
+    UNIFIED_SOURCES += [
+        "nsBandePrinting.cpp",
+    ]
+
 SOURCES += [
     "DMABufSurface.cpp",
     "MediaKeysEventSourceFactory.cpp",

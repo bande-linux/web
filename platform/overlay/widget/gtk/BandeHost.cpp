@@ -41,6 +41,7 @@ static LazyLogModule sBandeLog("Bande");
   X(start_drag, bool, uint64_t, uint32_t, size_t, const char* const*, const uint8_t* const*, const size_t*) \
   X(set_text_input, void, uint64_t, bool, double, double, double, double) \
   X(choose_files, void, uint64_t, uint32_t, uint32_t, const char*, const char*, uint32_t, const char*, const char*) \
+  X(print_pdf, void, const char*, const char*)                         \
   X(accept_drag, void, uint64_t, uint32_t)                             \
   X(paste, bool, const char*)                                          \
   X(flush, void)                                                       \
@@ -172,6 +173,9 @@ void BandeHost::ChooseFiles(uint64_t aWindow, uint32_t aRequest,
                             const char* aName, const char* aFolder) {
   s_choose_files(aWindow, aRequest, aMode, aTitle, aFilters, aFilterIndex,
                  aName, aFolder);
+}
+void BandeHost::PrintPdf(const char* aTitle, const char* aPath) {
+  s_print_pdf(aTitle, aPath);
 }
 void BandeHost::AcceptDrag(uint64_t aWindow, uint32_t aAction) {
   s_accept_drag(aWindow, aAction);

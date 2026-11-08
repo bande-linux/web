@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use zbus::blocking::{Connection, Proxy};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::zvariant::{Fd, OwnedObjectPath, OwnedValue, Value};
 
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -96,4 +96,22 @@ pub(crate) fn ask(parent: &str, question: &Question) -> Option<Vec<String>> {
     results
         .get("uris")
         .and_then(|uris| Vec::<String>::try_from(uris.try_clone().ok()?).ok())
+}
+
+const PRINT: &str = "org.freedesktop.portal.Print";
+
+pub(crate) fn print(parent: &str, title: &str, path: &str) -> Option<()> {
+    let file = std::fs::File::open(path).ok()?;
+    let _ = std::fs::remove_file(path);
+    let session = Connection::session().ok()?;
+    let printer = Proxy::new(&session, PORTAL, PORTAL_PATH, PRINT).ok()?;
+    let mut options: HashMap<&str, Value<'_>> = HashMap::new();
+    options.insert("modal", Value::from(true));
+    let _: OwnedObjectPath = printer
+        .call(
+            "Print",
+            &(parent, title, Fd::from(std::os::fd::AsFd::as_fd(&file)), options),
+        )
+        .ok()?;
+    Some(())
 }

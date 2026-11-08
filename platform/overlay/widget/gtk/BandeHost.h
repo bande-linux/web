@@ -112,6 +112,7 @@ class BandeHost final {
                         const char* const* aMimes, const uint8_t* const* aData,
                         const size_t* aLengths);
   static void AcceptDrag(uint64_t aWindow, uint32_t aAction);
+  static void PrintPdf(const char* aTitle, const char* aPath);
   static void ChooseFiles(uint64_t aWindow, uint32_t aRequest, uint32_t aMode,
                           const char* aTitle, const char* aFilters,
                           uint32_t aFilterIndex, const char* aName,

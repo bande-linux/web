@@ -1061,3 +1061,15 @@ pub unsafe extern "C" fn bande_gecko_choose_files(
         });
     });
 }
+
+/// # Safety
+/// `title` and `path` are null or NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_print_pdf(title: *const c_char, path: *const c_char) {
+    let (title, path) = (text_of(title), text_of(path));
+    with_host((), |host| {
+        let window = host.focused.or_else(|| host.ids.first().copied()).unwrap_or(0);
+        let parent = host.exported(window);
+        std::thread::spawn(move || portal::print(&parent, &title, &path));
+    });
+}

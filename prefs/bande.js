@@ -181,3 +181,4 @@ pref("browser.tabs.inTitlebar", 1);
 pref("browser.compactmode.show", true);
 pref("signon.management.page.breach-alerts.enabled", false, locked);
 pref("signon.rememberSignons", true);
+pref("print.prefer_system_dialog", true);
