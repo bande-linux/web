@@ -162,3 +162,10 @@ nsresult nsPrintSettingsServiceBande::_CreatePrintSettings(
   settings.forget(aResult);
   return NS_OK;
 }
+
+already_AddRefed<nsIPrintSettings> CreatePlatformPrintSettings(
+    const PrintSettingsInitializer& aSettings) {
+  auto settings = MakeRefPtr<nsPrintSettings>();
+  settings->InitWithInitializer(aSettings);
+  return settings.forget();
+}
