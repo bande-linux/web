@@ -851,7 +851,14 @@ static uint32_t Utf16Offset(const nsACString& aUtf8, uint32_t aBytes) {
       .Length();
 }
 
+static LazyLogModule sImeLog("BandeIME");
+
 void nsWindow::DispatchComposition(const BandeEvent& aEvent) {
+  MOZ_LOG(sImeLog, LogLevel::Debug,
+          ("%s '%s' composing %d dispatcher %d",
+           aEvent.kind == BandeEventKind::ImeCommit ? "commit" : "preedit",
+           aEvent.text ? aEvent.text : "", mComposing,
+           GetTextEventDispatcher()->IsComposing()));
   RefPtr<TextEventDispatcher> dispatcher = GetTextEventDispatcher();
   if (NS_FAILED(dispatcher->BeginNativeInputTransaction())) {
     return;

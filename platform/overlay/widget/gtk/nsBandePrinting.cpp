@@ -5,6 +5,7 @@
 #include "nsBandePrinting.h"
 
 #include "BandeHost.h"
+#include "mozilla/Logging.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/gfx/PrintTargetPDF.h"
 #include <sys/stat.h>
@@ -22,6 +23,8 @@
 using namespace mozilla;
 using namespace mozilla::gfx;
 using namespace mozilla::widget;
+
+static LazyLogModule sPrintLog("BandePrint");
 
 NS_IMPL_ISUPPORTS(nsDeviceContextSpecBande, nsIDeviceContextSpec)
 
@@ -68,6 +71,9 @@ nsDeviceContextSpecBande::BeginDocument(const nsAString& aTitle,
 }
 
 RefPtr<PrintEndDocumentPromise> nsDeviceContextSpecBande::EndDocument() {
+  MOZ_LOG(sPrintLog, LogLevel::Debug,
+          ("end document, destination %d, spool %p",
+           int(mPrintSettings->GetOutputDestination()), mSpoolFile.get()));
   switch (mPrintSettings->GetOutputDestination()) {
     case nsIPrintSettings::kOutputDestinationPrinter: {
       nsAutoCString path;
@@ -143,6 +149,7 @@ nsPrintDialogServiceBande::ShowPrintDialog(mozIDOMWindowProxy* aParent,
                                            nsIPrintSettings* aSettings,
                                            JSContext* aCx,
                                            dom::Promise** aPromise) {
+  MOZ_LOG(sPrintLog, LogLevel::Debug, ("print dialog asked"));
   aSettings->SetOutputDestination(nsIPrintSettings::kOutputDestinationPrinter);
   aSettings->SetPrintSilent(true);
   return ResolvedPromise(aCx, NS_OK, aPromise);

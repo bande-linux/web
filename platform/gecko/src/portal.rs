@@ -107,11 +107,12 @@ pub(crate) fn print(parent: &str, title: &str, path: &str) -> Option<()> {
     let printer = Proxy::new(&session, PORTAL, PORTAL_PATH, PRINT).ok()?;
     let mut options: HashMap<&str, Value<'_>> = HashMap::new();
     options.insert("modal", Value::from(true));
-    let _: OwnedObjectPath = printer
-        .call(
-            "Print",
-            &(parent, title, Fd::from(std::os::fd::AsFd::as_fd(&file)), options),
-        )
-        .ok()?;
-    Some(())
+    let answer: zbus::Result<OwnedObjectPath> = printer.call(
+        "Print",
+        &(parent, title, Fd::from(std::os::fd::AsFd::as_fd(&file)), options),
+    );
+    if let Err(error) = &answer {
+        eprintln!("bande-gecko: print portal: {error}");
+    }
+    answer.ok().map(drop)
 }
