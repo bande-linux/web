@@ -455,7 +455,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
  
  #  ifdef MOZ_LOGGING
  #    include "mozilla/Logging.h"
-@@ -132,30 +132,68 @@
+@@ -132,30 +132,70 @@
    MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
    if (!mHiddenWindowTimerID) {
      LOG("WaylandVsyncSource::SetHiddenWindowVSync()");
@@ -502,10 +502,12 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
 +  {
 +    MutexAutoLock lock(mMutex);
 +    const auto now = TimeStamp::Now();
-+    if (!mVsyncEnabled || !mVsyncSourceEnabled || mIsShutdown ||
-+        now - mLastVsyncTimeStamp < mVsyncRate * 2) {
++    if (!mVsyncEnabled || !mVsyncSourceEnabled || mIsShutdown) {
 +      mStallTimerID = 0;
 +      return false;
++    }
++    if (now - mLastVsyncTimeStamp < mVsyncRate * 2) {
++      return true;
 +    }
 +    LOG("WaylandVsyncSource::StallGuardCallback() no frame callback, emulate");
 +    mLastVsyncTimeStamp = lastVSync = now;
@@ -529,7 +531,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    }
    WaylandSurfaceLock lock(mWaylandSurface);
    mWaylandSurface->SetVSyncCallbackStateLocked(lock, aEnabled);
-@@ -245,9 +283,6 @@
+@@ -245,9 +285,6 @@
      window = mWindow;
    }
  
@@ -539,7 +541,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    if (window->IsDestroyed()) {
      return false;
    }
-@@ -269,14 +304,8 @@
+@@ -269,14 +306,8 @@
  #  endif
    MOZ_DIAGNOSTIC_ASSERT(NS_IsMainThread());
  
@@ -556,7 +558,7 @@ Reuse Firefox's Wayland surfaces, buffers and vsync without GDK or GLib
    }
  
    MutexAutoLock lock(mMutex);
-@@ -371,7 +400,8 @@
+@@ -371,7 +402,8 @@
    mIsShutdown = true;
    mVsyncEnabled = false;
    mVsyncSourceEnabled = false;
