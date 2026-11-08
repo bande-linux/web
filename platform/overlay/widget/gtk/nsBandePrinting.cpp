@@ -24,8 +24,6 @@ using namespace mozilla;
 using namespace mozilla::gfx;
 using namespace mozilla::widget;
 
-static LazyLogModule sPrintLog("BandePrint");
-
 NS_IMPL_ISUPPORTS(nsDeviceContextSpecBande, nsIDeviceContextSpec)
 
 NS_IMETHODIMP
@@ -71,9 +69,6 @@ nsDeviceContextSpecBande::BeginDocument(const nsAString& aTitle,
 }
 
 RefPtr<PrintEndDocumentPromise> nsDeviceContextSpecBande::EndDocument() {
-  MOZ_LOG(sPrintLog, LogLevel::Debug,
-          ("end document, destination %d, spool %p",
-           int(mPrintSettings->GetOutputDestination()), mSpoolFile.get()));
   switch (mPrintSettings->GetOutputDestination()) {
     case nsIPrintSettings::kOutputDestinationPrinter: {
       nsAutoCString path;
@@ -149,7 +144,6 @@ nsPrintDialogServiceBande::ShowPrintDialog(mozIDOMWindowProxy* aParent,
                                            nsIPrintSettings* aSettings,
                                            JSContext* aCx,
                                            dom::Promise** aPromise) {
-  MOZ_LOG(sPrintLog, LogLevel::Debug, ("print dialog asked"));
   aSettings->SetOutputDestination(nsIPrintSettings::kOutputDestinationPrinter);
   aSettings->SetPrinterName(u"Bande"_ns);
   aSettings->SetPrintSilent(true);

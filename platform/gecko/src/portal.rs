@@ -45,14 +45,18 @@ fn folder_bytes(folder: &str) -> Vec<u8> {
     bytes
 }
 
-pub(crate) fn ask(parent: &str, question: &Question) -> Option<Vec<String>> {
+fn request_token() -> String {
     static REQUESTS: AtomicU32 = AtomicU32::new(0);
-    let session = Connection::session().ok()?;
-    let token = format!(
+    format!(
         "bande_browser_{}_{}",
         std::process::id(),
         REQUESTS.fetch_add(1, Ordering::Relaxed)
-    );
+    )
+}
+
+pub(crate) fn ask(parent: &str, question: &Question) -> Option<Vec<String>> {
+    let session = Connection::session().ok()?;
+    let token = request_token();
     let sender = session.unique_name()?.trim_start_matches(':').replace('.', "_");
     let path = OwnedObjectPath::try_from(format!("{PORTAL_PATH}/request/{sender}/{token}")).ok()?;
     let request = Proxy::new(&session, PORTAL, path, REQUEST).ok()?;
@@ -100,21 +104,30 @@ pub(crate) fn ask(parent: &str, question: &Question) -> Option<Vec<String>> {
 
 const PRINT: &str = "org.freedesktop.portal.Print";
 
-pub(crate) fn print(parent: &str, title: &str, path: &str) -> Option<()> {
-    eprintln!("bande-gecko: printing {path}");
+pub(crate) fn print(parent: &str, title: &str, path: &str) -> Option<u32> {
     let file = std::fs::File::open(path).ok()?;
     let _ = std::fs::remove_file(path);
     let session = Connection::session().ok()?;
+    let token = request_token();
+    let sender = session.unique_name()?.trim_start_matches(':').replace('.', "_");
+    let request_path =
+        OwnedObjectPath::try_from(format!("{PORTAL_PATH}/request/{sender}/{token}")).ok()?;
+    let request = Proxy::new(&session, PORTAL, request_path, REQUEST).ok()?;
+    let mut responses = request.receive_signal("Response").ok()?;
     let printer = Proxy::new(&session, PORTAL, PORTAL_PATH, PRINT).ok()?;
     let mut options: HashMap<&str, Value<'_>> = HashMap::new();
+    options.insert("handle_token", Value::from(token.as_str()));
     options.insert("modal", Value::from(true));
-    let answer: zbus::Result<OwnedObjectPath> = printer.call(
-        "Print",
-        &(parent, title, Fd::from(std::os::fd::AsFd::as_fd(&file)), options),
-    );
-    match &answer {
-        Ok(handle) => eprintln!("bande-gecko: print portal accepted the job as {handle}, parent {parent:?}"),
-        Err(error) => eprintln!("bande-gecko: print portal: {error}"),
-    }
-    answer.ok().map(drop)
+    let _: OwnedObjectPath = printer
+        .call(
+            "Print",
+            &(parent, title, Fd::from(std::os::fd::AsFd::as_fd(&file)), options),
+        )
+        .ok()?;
+    let response = responses.next()?;
+    let (code, _) = response
+        .body()
+        .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+        .ok()?;
+    Some(code)
 }
