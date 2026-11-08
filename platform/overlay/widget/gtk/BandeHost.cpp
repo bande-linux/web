@@ -40,6 +40,7 @@ static LazyLogModule sBandeLog("Bande");
   X(clipboard_types, size_t, char*, size_t)                            \
   X(start_drag, bool, uint64_t, uint32_t, size_t, const char* const*, const uint8_t* const*, const size_t*) \
   X(set_text_input, void, uint64_t, bool, double, double, double, double) \
+  X(choose_files, void, uint64_t, uint32_t, uint32_t, const char*, const char*, uint32_t, const char*, const char*) \
   X(accept_drag, void, uint64_t, uint32_t)                             \
   X(paste, bool, const char*)                                          \
   X(flush, void)                                                       \
@@ -164,6 +165,13 @@ bool BandeHost::StartDrag(uint64_t aWindow, uint32_t aActions, size_t aCount,
 void BandeHost::SetTextInput(uint64_t aWindow, bool aEnabled, double aX,
                              double aY, double aWidth, double aHeight) {
   s_set_text_input(aWindow, aEnabled, aX, aY, aWidth, aHeight);
+}
+void BandeHost::ChooseFiles(uint64_t aWindow, uint32_t aRequest,
+                            uint32_t aMode, const char* aTitle,
+                            const char* aFilters, uint32_t aFilterIndex,
+                            const char* aName, const char* aFolder) {
+  s_choose_files(aWindow, aRequest, aMode, aTitle, aFilters, aFilterIndex,
+                 aName, aFolder);
 }
 void BandeHost::AcceptDrag(uint64_t aWindow, uint32_t aAction) {
   s_accept_drag(aWindow, aAction);

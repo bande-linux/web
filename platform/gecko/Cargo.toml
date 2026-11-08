@@ -15,6 +15,7 @@ bande-graphics = { git = "https://github.com/bande-linux/desktop", branch = "gap
 bande-toolkit-platform = { git = "https://github.com/bande-linux/desktop", branch = "gap-firefox-bande-widget" }
 rustix = { version = "=1.1.6", features = ["event", "pipe"] }
 wayland-client = "=0.31.15"
+zbus = "=5.19.0"
 
 [profile.release]
 codegen-units = 4

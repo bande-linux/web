@@ -1,7 +1,12 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_void};
+use std::io::{Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::net::UnixStream;
+use std::sync::mpsc::{Receiver, Sender, channel};
+
+mod portal;
 
 use bande_graphics::{Color, Cursor, Rect, Event, Modifiers, PointerButton, ResizeEdge, Scene, ScrollSource};
 use bande_toolkit_platform::{DragAction, DragEvent, Role, Surfaces, Transfer, Wait, Window, WindowEvent, step_surfaces};
@@ -32,6 +37,7 @@ pub const EVENT_DRAG_DROP: u32 = 22;
 pub const EVENT_DRAG_FINISHED: u32 = 23;
 pub const EVENT_IME_PREEDIT: u32 = 24;
 pub const EVENT_IME_COMMIT: u32 = 25;
+pub const EVENT_FILES_CHOSEN: u32 = 26;
 
 const DRAG_COPY: u32 = 1;
 const DRAG_MOVE: u32 = 2;
@@ -98,6 +104,10 @@ struct Host {
     connection: Connection,
     idle: EventQueue<Idle>,
     wake: OwnedFd,
+    answers: Receiver<Queued>,
+    answer_ready: UnixStream,
+    answer_sender: Sender<Queued>,
+    answer_wake: UnixStream,
     watched: Vec<RawFd>,
     windows: Vec<Window>,
     ids: Vec<u64>,
@@ -234,6 +244,13 @@ impl Host {
     fn window(&mut self, id: u64) -> Option<&mut Window> {
         let index = self.position(id)?;
         self.windows.get_mut(index)
+    }
+
+    fn exported(&mut self, id: u64) -> String {
+        let top = self.toplevel_of(id);
+        self.window(top)
+            .and_then(|window| window.exported_handle().map(|handle| format!("wayland:{handle}")))
+            .unwrap_or_default()
     }
 
     fn translate(&mut self, window: u64, event: WindowEvent) {
@@ -416,7 +433,7 @@ impl Host {
     }
 
     fn watched_fds(&self) -> Vec<BorrowedFd<'_>> {
-        let mut fds = vec![self.wake.as_fd()];
+        let mut fds = vec![self.wake.as_fd(), self.answer_ready.as_fd()];
         fds.extend(
             self.watched
                 .iter()
@@ -426,7 +443,15 @@ impl Host {
     }
 
     fn source_is_ready(&mut self, index: usize) {
-        match index.checked_sub(1).and_then(|at| self.watched.get(at)) {
+        if index == 1 {
+            let mut bytes = [0_u8; 64];
+            while matches!((&self.answer_ready).read(&mut bytes), Ok(read) if read > 0) {}
+            while let Ok(answer) = self.answers.try_recv() {
+                self.events.push_back(answer);
+            }
+            return;
+        }
+        match index.checked_sub(2).and_then(|at| self.watched.get(at)) {
             Some(fd) => self.events.push_back(Queued {
                 kind: EVENT_FD_READY,
                 a: u32::try_from(*fd).unwrap_or(0),
@@ -525,10 +550,21 @@ pub unsafe extern "C" fn bande_gecko_init(wake_fd: RawFd) -> *mut c_void {
     let display = connection.backend().display_ptr().cast();
     let idle = connection.new_event_queue();
     let wake = unsafe { OwnedFd::from_raw_fd(wake_fd) };
+    let Ok((answer_ready, answer_wake)) = UnixStream::pair() else {
+        return std::ptr::null_mut();
+    };
+    if answer_ready.set_nonblocking(true).is_err() {
+        return std::ptr::null_mut();
+    }
+    let (answer_sender, answers) = channel();
     HOST.set(Some(Host {
         connection,
         idle,
         wake,
+        answers,
+        answer_ready,
+        answer_sender,
+        answer_wake,
         watched: Vec::new(),
         windows: Vec::new(),
         ids: Vec::new(),
@@ -562,6 +598,7 @@ pub unsafe extern "C" fn bande_gecko_open(
             return 0;
         };
         window.set_key_detail(true);
+        window.export();
         let backdrop = backdrop_of(&window);
         if window.set_hosted_backdrop(backdrop).is_err() {
             return 0;
@@ -978,5 +1015,49 @@ pub extern "C" fn bande_gecko_set_text_input(
         if enabled {
             host.text_areas.push((id, area(x, y, width, height)));
         }
+    });
+}
+
+/// # Safety
+/// The strings are null or NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bande_gecko_choose_files(
+    window: u64,
+    request: u32,
+    mode: u32,
+    title: *const c_char,
+    filters: *const c_char,
+    filter_index: u32,
+    name: *const c_char,
+    folder: *const c_char,
+) {
+    let question = portal::Question {
+        mode,
+        title: text_of(title),
+        filters: text_of(filters),
+        filter_index,
+        name: text_of(name),
+        folder: text_of(folder),
+    };
+    with_host((), |host| {
+        let parent = host.exported(window);
+        let sender = host.answer_sender.clone();
+        let Ok(mut wake) = host.answer_wake.try_clone() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let answer = portal::ask(&parent, &question);
+            let queued = Queued {
+                kind: EVENT_FILES_CHOSEN,
+                window,
+                a: request,
+                b: u32::from(answer.is_some()),
+                data: answer.unwrap_or_default().join("\n").into_bytes(),
+                ..Queued::default()
+            };
+            if sender.send(queued).is_ok() {
+                let _ = wake.write_all(&[1]);
+            }
+        });
     });
 }

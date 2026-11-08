@@ -39,6 +39,7 @@ enum class BandeEventKind : uint32_t {
   DragFinished = 23,
   ImePreedit = 24,
   ImeCommit = 25,
+  FilesChosen = 26,
 };
 
 enum BandeModifier : uint32_t {
@@ -111,6 +112,10 @@ class BandeHost final {
                         const char* const* aMimes, const uint8_t* const* aData,
                         const size_t* aLengths);
   static void AcceptDrag(uint64_t aWindow, uint32_t aAction);
+  static void ChooseFiles(uint64_t aWindow, uint32_t aRequest, uint32_t aMode,
+                          const char* aTitle, const char* aFilters,
+                          uint32_t aFilterIndex, const char* aName,
+                          const char* aFolder);
   static void SetTextInput(uint64_t aWindow, bool aEnabled, double aX,
                            double aY, double aWidth, double aHeight);
   static void WatchFd(int aFd);

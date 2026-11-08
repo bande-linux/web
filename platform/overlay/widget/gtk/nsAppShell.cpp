@@ -13,6 +13,7 @@
 #include "BandeFdWatch.h"
 #include "BandeHost.h"
 #include "nsClipboard.h"
+#include "nsFilePicker.h"
 #include "gfxPlatform.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Components.h"
@@ -111,6 +112,11 @@ bool nsAppShell::ProcessNextNativeEvent(bool aMayWait) {
       NativeEventCallback();
     } else if (event.kind == BandeEventKind::ClipboardData) {
       nsClipboard::HandleData(event.text, event.data, event.len);
+    } else if (event.kind == BandeEventKind::FilesChosen) {
+      nsFilePicker::HandleAnswer(
+          event.a, event.b,
+          nsDependentCSubstring(reinterpret_cast<const char*>(event.data),
+                                event.len));
     } else if (event.kind == BandeEventKind::ClipboardChanged) {
       nsClipboard::HandleChanged();
     } else if (event.kind == BandeEventKind::FdReady) {

@@ -313,7 +313,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "bande-bus"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "tracing",
  "zbus",
@@ -322,7 +322,7 @@ dependencies = [
 [[package]]
 name = "bande-datetime"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "icu_calendar",
  "icu_datetime",
@@ -336,7 +336,7 @@ dependencies = [
 [[package]]
 name = "bande-design"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 
 [[package]]
 name = "bande-gecko"
@@ -346,12 +346,13 @@ dependencies = [
  "bande-toolkit-platform",
  "rustix",
  "wayland-client",
+ "zbus",
 ]
 
 [[package]]
 name = "bande-graphics"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "bande-design",
  "fontique",
@@ -370,7 +371,7 @@ dependencies = [
 [[package]]
 name = "bande-inbox"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "rustix",
 ]
@@ -378,7 +379,7 @@ dependencies = [
 [[package]]
 name = "bande-keyboard"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "bande-l10n",
  "roxmltree",
@@ -387,7 +388,7 @@ dependencies = [
 [[package]]
 name = "bande-l10n"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "bande-l10n-macros",
  "fluent-bundle",
@@ -398,12 +399,12 @@ dependencies = [
 [[package]]
 name = "bande-l10n-macros"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 
 [[package]]
 name = "bande-log"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "rustix",
  "tracing",
@@ -414,7 +415,7 @@ dependencies = [
 [[package]]
 name = "bande-notify"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "bande-bus",
  "bande-datetime",
@@ -429,7 +430,7 @@ dependencies = [
 [[package]]
 name = "bande-protocols"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "wayland-backend",
  "wayland-client",
@@ -440,7 +441,7 @@ dependencies = [
 [[package]]
 name = "bande-sound"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "tracing",
  "zbus",
@@ -449,12 +450,12 @@ dependencies = [
 [[package]]
 name = "bande-spring"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 
 [[package]]
 name = "bande-toolkit-platform"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -480,7 +481,7 @@ dependencies = [
 [[package]]
 name = "bande-volumes"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "rustix",
  "tracing",
@@ -490,7 +491,7 @@ dependencies = [
 [[package]]
 name = "bande-widgets"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "accesskit",
  "bande-graphics",
@@ -503,7 +504,7 @@ dependencies = [
 [[package]]
 name = "bande-xdg"
 version = "0.1.7"
-source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#81ed38eb434a893131af3dd9bfe2ea078e347243"
+source = "git+https://github.com/bande-linux/desktop?branch=gap-firefox-bande-widget#b1b40e8458a6d1e7079edf1d8790671b0c86186e"
 dependencies = [
  "bande-bus",
  "bande-inbox",

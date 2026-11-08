@@ -63,6 +63,7 @@ UNIFIED_SOURCES += [
     "nsBidiKeyboard.cpp",
     "nsClipboard.cpp",
     "nsDragService.cpp",
+    "nsFilePicker.cpp",
     "nsLookAndFeel.cpp",
     "nsWaylandDisplay.cpp",
     "nsWidgetFactory.cpp",
