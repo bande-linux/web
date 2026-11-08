@@ -101,6 +101,7 @@ pub(crate) fn ask(parent: &str, question: &Question) -> Option<Vec<String>> {
 const PRINT: &str = "org.freedesktop.portal.Print";
 
 pub(crate) fn print(parent: &str, title: &str, path: &str) -> Option<()> {
+    eprintln!("bande-gecko: printing {path}");
     let file = std::fs::File::open(path).ok()?;
     let _ = std::fs::remove_file(path);
     let session = Connection::session().ok()?;
@@ -111,8 +112,9 @@ pub(crate) fn print(parent: &str, title: &str, path: &str) -> Option<()> {
         "Print",
         &(parent, title, Fd::from(std::os::fd::AsFd::as_fd(&file)), options),
     );
-    if let Err(error) = &answer {
-        eprintln!("bande-gecko: print portal: {error}");
+    match &answer {
+        Ok(handle) => eprintln!("bande-gecko: print portal accepted the job as {handle}, parent {parent:?}"),
+        Err(error) => eprintln!("bande-gecko: print portal: {error}"),
     }
     answer.ok().map(drop)
 }
