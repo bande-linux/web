@@ -95,3 +95,4 @@ widget/gtk/mozwayland
 third_party/libwebrtc/modules/portal/scoped_glib.cc
 third_party/libwebrtc/modules/portal/scoped_glib.h
 third_party/libwebrtc/modules/desktop_capture/linux/wayland/scoped_glib.h
+third_party/pipewire/libpipewire/mozgio.cpp
