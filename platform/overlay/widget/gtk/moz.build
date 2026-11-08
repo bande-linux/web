@@ -58,6 +58,7 @@ UNIFIED_SOURCES += [
     "InProcessGtkCompositorWidget.cpp",
     "NativeKeyBindings.cpp",
     "NativeMenuSupport.cpp",
+    "ScreenHelperBande.cpp",
     "nsAppShell.cpp",
     "nsBandeIdleService.cpp",
     "nsBidiKeyboard.cpp",

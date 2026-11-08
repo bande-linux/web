@@ -8,6 +8,8 @@
 class ScreenHelperBande final {
  public:
   static void EnsureStarted();
+  static void Refresh();
+  static void SetScale(double aScale);
 };
 
 #endif

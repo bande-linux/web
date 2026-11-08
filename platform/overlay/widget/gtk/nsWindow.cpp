@@ -400,6 +400,7 @@ void nsWindow::RefreshScale() {
   if (!mBandeWindow) {
     return;
   }
+  ScreenHelperBande::SetScale(FractionalScaleFactor());
   NotifyAPZOfDPIChange();
   uint32_t width = 0, height = 0;
   BandeHost::Size(mBandeWindow, &width, &height);
@@ -1006,19 +1007,3 @@ void nsWindow::HandleBandeEvent(const BandeEvent& aEvent) {
   }
 }
 
-#include "mozilla/widget/ScreenManager.h"
-
-void ScreenHelperBande::EnsureStarted() {
-  static bool sStarted = false;
-  if (sStarted || !XRE_IsParentProcess()) {
-    return;
-  }
-  sStarted = true;
-  const LayoutDeviceIntRect rect(0, 0, 1920, 1200);
-  AutoTArray<RefPtr<Screen>, 1> screens;
-  screens.AppendElement(MakeRefPtr<Screen>(
-      rect, rect, 24, 24, 0, DesktopToLayoutDeviceScale(),
-      CSSToLayoutDeviceScale(), 96.0f, Screen::IsPseudoDisplay::No,
-      Screen::IsHDR::No, 80.0f, 1000.0f));
-  ScreenManager::Refresh(std::move(screens));
-}
